@@ -4,7 +4,8 @@
  * 每一轮在系统提示词里带上一小块「相关记忆」：按本轮用户消息检索记忆库，
  * 取前几条的标题 + 摘要 + id。没有命中就只留目录索引，不占预算。
  */
-import { folderTree, excerpt, search, listEntries } from './core.js'
+import { folderTree, excerpt, search, listEntries, semanticTop, fuseHybrid, ensureEmbeddings } from './core.js'
+import { embed, loadEmbedder } from './embed.js'
 
 const name = 'context-loom'
 const inject = ['systemPrompt']
@@ -39,11 +40,14 @@ function short(label) {
     .replace('建模要求与偏好', '建模偏好').replace('建模成品', '成品')
 }
 
-function build(text) {
+function build(text, vec) {
   const index = folderLine()
   const prog = progLine()
   const tail = [prog, index].filter(Boolean)
-  const hits = text && text.trim() ? search(text, { limit: 5, boost: PERSONAL.test(text) ? { portrait: 1.45 } : undefined }) : []
+  const boost = PERSONAL.test(text) ? { portrait: 1.45 } : undefined
+  const lexical = text && text.trim() ? search(text, { limit: 8, boost }) : []
+  const semantic = vec ? semanticTop(vec, { limit: 8 }) : []
+  const hits = vec ? fuseHybrid(lexical, semantic, 5) : lexical.slice(0, 5)
   if (!hits.length) return [...tail, '（本轮没有检索到直接相关的记忆；需要时用 memory_search。）'].join('\n')
   const lines = ['记忆库·本轮相关：']
   let used = 200
@@ -62,8 +66,9 @@ function build(text) {
 /** @type {import('@deepseek-ai/cordis').Plugin} */
 function apply(ctx) {
   const lastUser = new Map()
+  const lastVec = new Map()
 
-  ctx.on('agent/pre-step', ({ messages }, next) => {
+  ctx.on('agent/pre-step', async ({ messages }, next) => {
     const agent = ctx.get?.('agents')?.currentInitiator?.()
     if (!agent) return next()
     if (!Array.isArray(messages)) return next()
@@ -73,7 +78,16 @@ function apply(ctx) {
       .map((m) => (Array.isArray(m.content) ? m.content.filter((c) => c.type === 'text').map((c) => c.text).join(' ') : ''))
       .join('\n')
       .trim()
-    if (text) lastUser.set(agent, text)
+    if (text) {
+      lastUser.set(agent, text)
+      try {
+        const vec = await embed(text)
+        if (vec) lastVec.set(agent, vec)
+        else lastVec.delete(agent)
+      } catch (e) {
+        lastVec.delete(agent)
+      }
+    }
     return next()
   })
 
@@ -90,7 +104,7 @@ function apply(ctx) {
           text: () => {
             // 「无角色」只表示不套人格，记忆检索照常；记忆是底层能力，不是人格的一部分
             try {
-              return build(lastUser.get(agent) || '')
+              return build(lastUser.get(agent) || '', lastVec.get(agent))
             } catch {
               return ''
             }
@@ -102,12 +116,18 @@ function apply(ctx) {
       ctx.logger?.warn?.(`chat-atlas: context section failed: ${e?.message || e}`)
     }
   }
+  loadEmbedder()
+    .then((p) => (p ? ensureEmbeddings(embed) : 0))
+    .then((n) => { if (n) ctx.logger?.info?.(`chat-atlas: 语义索引补了 ${n} 条`) })
+    .catch(() => {})
+
   for (const agent of ctx.get?.('agents')?.list?.() || []) install(agent)
   ctx.on('agent/created', ({ agent }) => install(agent))
   ctx.on('agent/disposed', ({ agent }) => {
     fibers.get(agent)?.dispose?.()
     fibers.delete(agent)
     lastUser.delete(agent)
+    lastVec.delete(agent)
   })
 }
 

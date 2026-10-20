@@ -1,0 +1,7 @@
+{
+  "name": "sharp",
+  "version": "0.0.0-chat-atlas-stub",
+  "description": "No-op stand-in: chat-atlas only does text embeddings and never processes images.",
+  "main": "index.js",
+  "license": "MIT"
+}

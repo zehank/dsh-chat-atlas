@@ -340,6 +340,77 @@ export function search(query, { limit = 6, kinds, expand = true, boost } = {}) {
   return scored.slice(0, limit)
 }
 
+/* ── 语义索引（embedding 缓存，派生数据） ───────────────────── */
+
+export const EMB_MODEL = 'multilingual-e5-small'
+const EMB_FILE = path.join(META, 'embeddings.json')
+let embCache = null
+
+export function loadEmbeddings() {
+  if (embCache) return embCache
+  const j = readJson(EMB_FILE, null)
+  embCache = j && j.model === EMB_MODEL && j.items ? j : { model: EMB_MODEL, dim: 384, items: {} }
+  return embCache
+}
+
+export function saveEmbeddings(j) {
+  embCache = j
+  writeJson(EMB_FILE, j)
+}
+
+/** 给还没有向量（或内容变了）的条目补向量，一次最多 limit 条。 */
+export async function ensureEmbeddings(embedFn, { limit = 400 } = {}) {
+  const entries = listEntries()
+  const store = loadEmbeddings()
+  let changed = 0
+  let n = 0
+  for (const e of entries) {
+    if (n >= limit) break
+    const rec = store.items[e.id]
+    if (rec && rec.h === e.updated && rec.v) continue
+    const text = `${e.title}\n${(e.tags || []).join(' ')}\n${e.body.slice(0, 400)}`
+    const v = await embedFn(text, { type: 'passage' })
+    if (!v) break
+    store.items[e.id] = { h: e.updated, v }
+    changed++
+    n++
+    if (n % 15 === 0) saveEmbeddings(store)
+  }
+  if (changed) saveEmbeddings(store)
+  return changed
+}
+
+/** 向量最近邻（余弦，向量已归一化）。 */
+export function semanticTop(vec, { limit = 6, kinds } = {}) {
+  if (!vec || !vec.length) return []
+  const store = loadEmbeddings()
+  const out = []
+  for (const e of listEntries()) {
+    if (kinds && !kinds.includes(e.kind)) continue
+    const rec = store.items[e.id]
+    if (!rec || !rec.v) continue
+    let dot = 0
+    const n = Math.min(vec.length, rec.v.length)
+    for (let i = 0; i < n; i++) dot += vec[i] * rec.v[i]
+    out.push({ ...e, score: dot })
+  }
+  out.sort((a, b) => b.score - a.score)
+  return out.slice(0, limit)
+}
+
+/** 倒数排名融合：词面 + 语义，两路都靠前的排最前。 */
+export function fuseHybrid(lexical, semantic, limit = 6) {
+  const byId = new Map()
+  const add = (e, i) => {
+    const cur = byId.get(e.id) || { ...e, rrf: 0 }
+    cur.rrf += 1 / (60 + i)
+    byId.set(e.id, cur)
+  }
+  lexical.forEach(add)
+  semantic.forEach(add)
+  return [...byId.values()].sort((a, b) => b.rrf - a.rrf).slice(0, limit)
+}
+
 /* ── 读写 ────────────────────────────────────────────────────── */
 
 export function writeEntry({ id, title, body, kind, subject, category, tags = [], links = [], source = '', created }) {

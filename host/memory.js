@@ -9,8 +9,9 @@ import path from 'node:path'
 import {
   KINDS, MEM, SUBJECTS, ensureDirs, excerpt, folderTree, invalidate,
   libraryKind, listEntries, progressReport, readEntry, readProgress, registerLibrary,
-  search, syllabusNodes, tool, writeEntry, writeProgress,
+  search, semanticTop, fuseHybrid, syllabusNodes, tool, writeEntry, writeProgress,
 } from './core.js'
+import { embed } from './embed.js'
 
 const name = 'memory-atlas'
 const inject = ['tools']
@@ -98,11 +99,17 @@ function apply(ctx) {
       kind: { type: 'string', description: '只看某个类别' },
     },
     output: jsonOutput({ hits: { type: 'array' } }),
-    execute(args) {
-      const hits = search(args.query, { limit: Math.min(Number(args.limit) || 6, 20), kinds: args.kind ? [args.kind] : undefined })
+    async execute(args) {
+      const n = Math.min(Number(args.limit) || 6, 20)
+      const kinds = args.kind ? [args.kind] : undefined
+      let hits = search(args.query, { limit: n, kinds })
+      try {
+        const vec = await embed(args.query)
+        if (vec) hits = fuseHybrid(search(args.query, { limit: n * 2, kinds }), semanticTop(vec, { limit: n * 2, kinds }), n)
+      } catch (e) {}
       if (!hits.length) return fail('没有命中。可以换个说法，或先用 memory_list 看有哪几类。')
       const lines = hits.map((h, i) => `${i + 1}. [${h.id}] ${h.title} — ${h.kind}${h.subject ? '/' + h.subject : ''}${h.tags.length ? ' #' + h.tags.join(' #') : ''}\n   ${excerpt(h.body, 120)}`)
-      return { ok: true, message: lines.join('\n'), hits: hits.map((h) => ({ id: h.id, title: h.title, kind: h.kind, ...(h.subject ? { subject: h.subject } : {}), score: Math.round(h.score * 100) / 100 })) }
+      return { ok: true, message: lines.join('\n'), hits: hits.map((h) => ({ id: h.id, title: h.title, kind: h.kind, ...(h.subject ? { subject: h.subject } : {}), score: Math.round((h.score ?? h.rrf ?? 0) * 100) / 100 })) }
     },
   }))
 

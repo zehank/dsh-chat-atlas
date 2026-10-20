@@ -21,13 +21,21 @@ DeepSeek Harness（DSH）插件：**角色 / 记忆 / 上下文** 三件套。
 
 **上下文（context-loom）**
 - 每轮按用户消息检索记忆库，把最相关几条注入系统提示词（有预算上限，无命中不占位）
+- 混合检索：BM25 词面 + 本地语义向量（all-MiniLM 系列的多语种版 e5-small，384 维），倒数排名融合
+- 语义模型不可用时自动退回纯词面检索，不会报错
 
 ## 安装
 
 ```bash
 git clone https://github.com/zehank/dsh-chat-atlas.git
-dsh plugin --profile desktop add "$(pwd)/dsh-chat-atlas"
+cd dsh-chat-atlas
+pnpm install
+node scripts/setup-sharp.mjs   # 文本检索用不到 sharp 的图片处理，换成空壳
+dsh plugin --profile desktop add "$(pwd)"
 ```
+
+语义模型（`Xenova/multilingual-e5-small`，约 130MB）不随仓库分发：首次启动时如果 `models/`
+里没有，会自动下载一次到该目录；下载失败就只用词面检索。
 
 装完**重启 DSH**（宿主侧插件在启动时组合）。
 
@@ -43,6 +51,8 @@ host/core.js          # 存储、检索、大纲、工具定义辅助
 host/memory.js        # 记忆插件
 host/role.js          # 角色插件 + /atlas/* HTTP 路由
 host/context.js       # 上下文插件
+host/embed.js         # 本地语义向量（onnx，可在缺失时降级）
+scripts/setup-sharp.mjs
 ```
 
 ## 数据
