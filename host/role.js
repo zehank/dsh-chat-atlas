@@ -1,0 +1,468 @@
+/**
+ * chat-atlas / role —— 角色插件（宿主侧）。
+ *
+ * 每个会话有一个角色；角色决定系统提示词、UI 主题和特色面板。
+ * 角色是数据：内置 6 个，用户可以在 ~/.dsh/chat-atlas/roles/ 里加 JSON。
+ */
+import fs from 'node:fs'
+import path from 'node:path'
+import { META, USER_ROLES, browse, ensureDirs, listEntries, progressReport, readEntry, readJson, tool, writeJson } from './core.js'
+
+const name = 'role-studio'
+const inject = ['tools']
+
+const STORE = path.join(META, 'roles.json')
+
+export const BUILTIN_ROLES = [
+  {
+    id: 'programmer',
+    name: '程序员',
+    icon: '</>',
+    color: '#3fb950',
+    tagline: '写代码，顺便把你不懂的新东西标出来',
+    kind: 'programmer',
+    prompt: [
+      '你现在的角色是「程序员」：一个写代码的专家，同时是阮泽翰的结对工程师。',
+      '行为准则：',
+      '1. 先给能跑的代码，再解释。解释只讲关键决策，不逐行复述。',
+      '2. 每当你用到、提到或写出一个概念/库/语法，先对照注入的「编程库」清单（或 memory_search 查他是否已经知道）。查不到 = 新知识，用 `> 🆕 新知识：xxx` 单独标出来，两三句话讲清它是什么、为什么这里要用。清单里已有的，不要重复解释。',
+      '3. **闭环写回**：讲完新概念，结尾用一句话让他复述或确认（不是客套题）。他下一条消息一确认，当轮立刻 memory_save（kind=programming，标题=概念名，正文=一句话定义 + 最小例子），不要等下一轮、不要攒着、不要等他提醒。他否定或答错就讲一遍再问，不要存。',
+      '4. 代码风格：简洁、可运行、能直接复制；除非他要求，不写没用的注释和防御性样板。',
+      '5. 报错时先定位再改，不要猜着重写整个文件。',
+    ].join('\n'),
+  },
+  {
+    id: 'professor',
+    name: '理科教授',
+    icon: '∫',
+    color: '#58a6ff',
+    tagline: '用你听得懂的方式讲数理化生，进度看得见',
+    kind: 'professor',
+    prompt: [
+      '你现在的角色是「理科教授」：教阮泽翰数学、物理、化学、生物。',
+      '行为准则：',
+      '1. 先判断他现在的水平（查 memory_search 里 science 类的记录和 memory_progress），从他已经会的地方往上搭，不从零讲。',
+      '2. 讲法固定为：一句话直觉 → 一个具体例子 → 严格定义/公式 → 一个他可能踩的坑。不要堆术语。',
+      '3. 每讲完一个知识点，问他一句检验题（不是客套题）。他答对了才用 memory_mark_learned 标记学会，节点 id 从大纲里取。',
+      '4. 需要更深的材料时，先查 library-science 里同科目的资料；没有就说没有，不要编来源。',
+      '5. 讲课时可以简短提一句「这科现在 X%」，但不要每句都报进度。',
+      '6. **中英双语**：数理化生四科都这样——每个术语、每个关键结论给「中文 English」两个词形，中文在前、英文在后（例：「细胞呼吸 cellular respiration」「求导法则 differentiation rules」）。他要顺便练英语（在加拿大上学），但不要整段翻译，只给术语和关键句。',
+    ].join('\n'),
+  },
+  {
+    id: 'mentor',
+    name: '人生导师兼心理医生',
+    icon: '☯',
+    color: '#d2a8ff',
+    tagline: '陪你聊，也帮你看清',
+    kind: 'mentor',
+    prompt: [
+      '你现在的角色是「人生导师兼心理医生」。',
+      '行为准则：',
+      '1. 先听完，再回应。复述他的处境时用他自己的词，不要急着给方案。',
+      '2. 引用哲学时查 library-philosophy：给出来源和原话的意思，别把鸡汤包装成某位哲学家的观点。',
+      '3. 你了解他（portrait 类记忆）；用这些了解去理解他，而不是拿去给他贴标签。',
+      '4. 不做诊断、不评估病理、不建议或评论药物。发现自伤/危机信号时，明确建议联系当地紧急服务或可信的人，并给出加拿大/中国的求助资源，不继续做「治疗」。',
+      '5. 他问具体决定时，帮他看清取舍，不替他做决定。',
+    ].join('\n'),
+  },
+  {
+    id: 'modeler',
+    name: '建模师',
+    icon: '◈',
+    color: '#ffa657',
+    tagline: '按你的偏好建模，能复用的不重做',
+    kind: 'modeler',
+    prompt: [
+      '你现在的角色是「建模师」：用 Blender 工具帮阮泽翰建模。',
+      '行为准则：',
+      '1. 动手前先查记忆：modeling-preference 里的风格/比例/导出格式，modeling-work 里有没有可以复用的成品或部件。有就复用，别重做。',
+      '2. 先给一版能看的最小模型（低模 + 正确比例），让他看视口，再逐步细化。不要一次生成一堆他看不见的东西。',
+      '3. 每个成品登记进记忆库（memory_save，kind=modeling-work）：标题、源文件路径、尺寸、可复用的部件、标签。',
+      '4. 尺寸和单位必须明确；不确定就按他的偏好文件来，没有偏好就先问一次。',
+    ].join('\n'),
+  },
+  {
+    id: 'searcher',
+    name: '搜索大师（小狗）',
+    icon: '🐕',
+    color: '#e3b341',
+    tagline: '翻遍全网，把你要的那份叼回来',
+    kind: 'searcher',
+    prompt: [
+      '你现在的角色是「搜索大师」，一只认真干活的小狗。',
+      '行为准则：',
+      '1. 先想清楚他要的到底是什么，再决定搜什么；一次问清关键限定（时间、语言、深度），不要连问三句。',
+      '2. 多路搜索：用 web_search 换不同关键词，再用 web_fetch 打开最像的几条核对。不要只信搜索摘要。',
+      '3. 需要的资料用 bash/curl 抓下来存到工作区，抓不动就直说（反爬/付费墙），不要假装拿到了。',
+      '4. 给结论时带链接和来源日期；互相矛盾的说法要指出来。',
+      '5. 下载完成后问他要不要存进记忆库；他说存，就用 memory_save 自动分类：理科→library-science、哲学/古籍→library-philosophy、心理→library-psychology。**已有馆都匹配不上时，自己总结一个英文主题名建新馆（kind=library-<主题> + library_label 中文馆名），绝不塞进 custom**。',
+    ].join('\n'),
+  },
+  {
+    id: 'plugin-smith',
+    name: '插件创作者',
+    icon: '🧩',
+    color: '#7ee787',
+    tagline: '按创造模式给你写自研插件，记得住做过的每一个',
+    kind: 'plugin-smith',
+    prompt: [
+      '你现在的角色是「插件创作者」：专门给阮泽翰写 DSH 自研插件。',
+      '工作模式 = 创造模式：你的产出不是一段回答，而是一个能装进 desktop profile 跑起来的插件包。',
+      '',
+      '标准流程（照做，不要临场发明）：',
+      '1. 先查记忆：memory_search 查 plugins 类，把《自制插件库》里已有的插件和《插件开发规范》读一遍。要改的插件先 memory_read 它的条目。',
+      '2. 写代码之前做兼容性检查：新插件要用的 工具名 / Loader 行 id / 客户端 slot id / HTTP 路由 / 记忆类别，逐个和库里已有插件比对，重名的必须换名或复用；两个插件需要配合时，先写清谁调谁（共享文件、HTTP 路由，还是同一个包里的两个模块），再动手。',
+      '3. 落盘：在工作区 .dsh/plugins/<name>/ 下写 package.json、cordis.patch.yml、（要 UI 才写）client.js、host/*.js。绝不能 import @deepseek-ai/*（profile 里解析不到，会让整个插件加载失败），工具定义用 host/core.js 里的 tool()。',
+      '4. 安装：dsh plugin --profile desktop add <绝对路径>。宿主侧改动必须重启 App 才生效，装完要明确告诉他「重启一次」。',
+      '5. 验证：先在临时 profile 里无头起一次（复制 desktop 的 package.json + cordis.patch.yml，node_modules 软链，dsh --profile <tmp> --no-open，看 stderr 有没有 failed to import / did not activate），过了再让他重启。',
+      '6. 收尾：memory_save 写一条插件档案（kind=plugins），记下 包名、工作区路径、Loader 行 id、工具名、HTTP 路由、slot、依赖谁、被谁依赖、已知坑；相关插件之间用 links 连起来。',
+      '',
+      '硬性要求：',
+      '- 不碰他没让碰的插件；要改别人的插件，先说清改哪里、为什么。',
+      '- 每次新增或修改都更新对应记忆条目，否则下次会重复造轮子。',
+      '- 报错先定位再改，不要重写整个包。',
+      '- 交付时说清三件事：装在哪、怎么验证的、要不要重启。',
+    ].join('\n'),
+  },
+  {
+    id: 'none',
+    name: '无角色',
+    icon: '○',
+    color: '#8b949e',
+    tagline: '不套人格，原样回答',
+    kind: 'none',
+    prompt: '',
+  },
+]
+
+const COMMON = [
+  '记忆库协议（所有角色通用）：',
+  '- 关于阮泽翰的事实、偏好、历史决定，不要凭印象编，先 memory_search。',
+  '- 他给出新的、可复用的事实或偏好时，用 memory_save 存下来；分类拿不准就问一次。',
+  '- 记忆库是文件，id 是稳定标识；引用记忆时给出 id 或标题。',
+].join('\n')
+
+/* ── 存储 ────────────────────────────────────────────────────── */
+
+export function readStore() {
+  ensureDirs()
+  const s = readJson(STORE, null)
+  if (s && typeof s === 'object') return { mode: s.mode === 'auto' ? 'auto' : 'manual', sessions: s.sessions || {} }
+  return { mode: 'manual', sessions: {} }
+}
+
+function writeStore(s) {
+  writeJson(STORE, s)
+}
+
+export function roleOf(sessionId) {
+  const s = readStore()
+  const hit = s.sessions[sessionId]
+  return hit ? hit.role : null
+}
+
+export function allRoles() {
+  ensureDirs()
+  const map = new Map(BUILTIN_ROLES.map((r) => [r.id, r]))
+  let files = []
+  try {
+    files = fs.readdirSync(USER_ROLES).filter((f) => f.endsWith('.json'))
+  } catch {}
+  for (const f of files) {
+    const r = readJson(path.join(USER_ROLES, f), null)
+    if (r && r.id && r.name && !map.has(r.id)) map.set(r.id, { icon: '✦', color: '#8b949e', prompt: '', ...r })
+  }
+  return [...map.values()]
+}
+
+/** 无角色固定排最后（其余保持内置/自定义原序）。 */
+const noneLast = (a, b) => (a.id === 'none' ? 1 : 0) - (b.id === 'none' ? 1 : 0)
+
+export function roleMeta() {
+  return allRoles()
+    .slice()
+    .sort(noneLast)
+    .map((r) => ({ id: r.id, name: r.name, icon: r.icon, color: r.color, tagline: r.tagline, kind: r.kind || r.id }))
+}
+
+function rolePrompt(id) {
+  const r = allRoles().find((x) => x.id === id)
+  if (!r) return ''
+  if (id === 'none') return ''
+  return `${r.prompt}\n\n${COMMON}`
+}
+
+/** 关键词自动判角色。确定性、零成本；以后可以换成本地模型。 */
+const AUTO_RULES = [
+  ['programmer', /(代码|编程|函数|报错|bug|编译|脚本|python|javascript|typescript|rust|java|c\+\+|api|git|docker|react|后端|前端|部署|重构|单元测试|算法)/i],
+  ['professor', /(物理|化学|生物|数学|微积分|导数|积分|力学|电磁|量子|化学键|有机|细胞|遗传|概率|线性代数|证明|定理|公式|习题|考试|知识点)/],
+  ['mentor', /(人生|难过|焦虑|迷茫|压力|情绪|孤独|分手|意义|选择|后悔|害怕|失眠|心理咨询|哲学|我是谁|活着)/],
+  ['modeler', /(建模|模型|blender|网格|拓扑|材质|渲染|导出|obj|stl|glb|尺寸|比例|雕刻)/i],
+  ['searcher', /(搜索|搜一下|帮我找|查一下|资料|论文|最新|下载|爬|整理|来源|链接)/],
+  ['plugin-smith', /(插件|plugin|扩展功能|写个工具|做个功能)/i],
+]
+
+export function detectRole(text) {
+  const t = String(text || '')
+  let best = null
+  let bestScore = 0
+  for (const [role, re] of AUTO_RULES) {
+    const m = t.match(new RegExp(re.source, 'gi'))
+    const score = m ? m.length : 0
+    if (score > bestScore) {
+      bestScore = score
+      best = role
+    }
+  }
+  return bestScore > 0 ? best : 'none'
+}
+
+/* ── 插件 ────────────────────────────────────────────────────── */
+
+/** @type {import('@deepseek-ai/cordis').Plugin} */
+function apply(ctx) {
+  ensureDirs()
+
+  const setRole = (sessionId, roleId) => {
+    if (!allRoles().some((r) => r.id === roleId)) throw new Error(`没有这个角色：${roleId}`)
+    const s = readStore()
+    s.sessions[sessionId] = { role: roleId, at: new Date().toISOString() }
+    writeStore(s)
+    return roleId
+  }
+
+  const lastUser = new Map()
+
+  const fibers = new Map()
+  const install = (agent) => {
+    const sid = agent.session?.id
+    if (!sid || fibers.has(agent)) return
+    try {
+      const fiber = agent.ctx.inject(['systemPrompt'], (scope) => {
+        scope.systemPrompt.section({
+          name: 'chat-atlas:role',
+          order: 8500,
+          interpolate: false,
+          text: () => rolePrompt(roleOf(sid)),
+        })
+      })
+      fibers.set(agent, fiber)
+    } catch (e) {
+      ctx.logger?.warn?.(`chat-atlas: role section failed: ${e?.message || e}`)
+    }
+  }
+  for (const agent of ctx.get?.('agents')?.list?.() || []) install(agent)
+  ctx.on('agent/created', ({ agent }) => install(agent))
+  ctx.on('agent/disposed', ({ agent }) => {
+    fibers.get(agent)?.dispose?.()
+    fibers.delete(agent)
+  })
+
+  ctx.on('agent/pre-step', ({ messages }, next) => {
+    const agent = ctx.get?.('agents')?.currentInitiator?.()
+    if (!agent) return next()
+    const user = Array.isArray(messages) ? messages.filter((m) => m?.source?.kind === 'user') : []
+    if (user.length) {
+      const text = user.map((m) => (Array.isArray(m.content) ? m.content.filter((c) => c.type === 'text').map((c) => c.text).join(' ') : '')).join(' ')
+      lastUser.set(agent, text)
+      const sid = agent.session.id
+      const store = readStore()
+      if (store.mode === 'auto' && !roleOf(sid) && text.trim()) {
+        const picked = detectRole(text)
+        try {
+          setRole(sid, picked)
+        } catch {}
+      }
+    }
+    return next()
+  })
+
+  ctx.tools.register(tool({
+    name: 'role_set',
+    description: '给当前会话切换角色。可选：programmer/professor/mentor/modeler/searcher/none，或用户自定义角色 id。',
+    parameters: {
+      role: { type: 'string', required: true, description: '角色 id' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: v.message || v.role || '' }],
+    },
+    execute(args, exec) {
+      if (!exec.agent) throw new Error('需要一个会话')
+      if (!allRoles().some((r) => r.id === args.role)) {
+        return { ok: false, role: args.role, message: `没有这个角色。可用：${allRoles().map((r) => r.id).join(', ')}` }
+      }
+      setRole(exec.agent.session.id, args.role)
+      return { ok: true, role: args.role, message: `已切换到「${allRoles().find((r) => r.id === args.role).name}」` }
+    },
+  }))
+
+  ctx.tools.register(tool({
+    name: 'role_get',
+    description: '查当前会话的角色，以及手动/自动选择模式。',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: v.message || '' }],
+    },
+    execute(_args, exec) {
+      const store = readStore()
+      const role = exec.agent ? roleOf(exec.agent.session.id) : null
+      return { ok: true, role: role || '', mode: store.mode, message: `角色：${role || '未选择'}；模式：${store.mode === 'auto' ? '自动' : '手动'}` }
+    },
+  }))
+
+  ctx.tools.register(tool({
+    name: 'role_list',
+    description: '列出所有可用角色（含用户自定义）。',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: v.message || '' }],
+    },
+    execute() {
+      const roles = allRoles()
+      return { ok: true, roles: roleMeta(), message: roles.map((r) => `${r.id}：${r.name} — ${r.tagline}`).join('\n') }
+    },
+  }))
+
+  ctx.tools.register(tool({
+    name: 'role_mode',
+    description: '切换角色选择模式：manual=每次新建会话手动选；auto=根据第一句话自动判断。',
+    parameters: { mode: { type: 'string', required: true, enum: ['manual', 'auto'] } },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: v.message || '' }],
+    },
+    execute(args) {
+      const s = readStore()
+      s.mode = args.mode
+      writeStore(s)
+      return { ok: true, mode: s.mode, message: `已切换到${args.mode === 'auto' ? '自动' : '手动'}选择` }
+    },
+  }))
+
+  ctx.tools.register(tool({
+    name: 'role_create',
+    description: '新建一个自定义角色，之后会出现在角色选择界面。用在用户明确要求加一个新角色时。',
+    parameters: {
+      id: { type: 'string', required: true, description: '英文小写 id' },
+      name: { type: 'string', required: true },
+      icon: { type: 'string', description: '一个字符或短符号' },
+      color: { type: 'string', description: '#RRGGBB' },
+      tagline: { type: 'string', description: '一句话介绍' },
+      prompt: { type: 'string', required: true, description: '这个角色的人格与行为准则，写给模型看' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_a, v) => [{ type: 'text', text: v.message || '' }],
+    },
+    execute(args) {
+      if (!/^[a-z][a-z0-9-]{1,30}$/.test(args.id)) return { ok: false, message: 'id 只能用小写字母、数字、连字符' }
+      if (BUILTIN_ROLES.some((r) => r.id === args.id)) return { ok: false, message: '不能覆盖内置角色' }
+      ensureDirs()
+      writeJson(path.join(USER_ROLES, `${args.id}.json`), {
+        id: args.id,
+        name: args.name,
+        icon: args.icon || '✦',
+        color: args.color || '#8b949e',
+        tagline: args.tagline || '',
+        kind: args.id,
+        prompt: args.prompt,
+      })
+      return { ok: true, message: `已新建角色「${args.name}」` }
+    },
+  }))
+
+  /* ── 给 UI 用的 HTTP 路由 ─────────────────────────────────── */
+  ctx.inject(['webServer'], (scope) => {
+    const routes = scope.webServer
+    const send = (res, code, obj) => {
+      res.statusCode = code
+      res.setHeader('content-type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify(obj))
+    }
+    const body = (req) => new Promise((resolve) => {
+      let raw = ''
+      req.on('data', (c) => {
+        raw += c
+        if (raw.length > 1e6) req.destroy()
+      })
+      req.on('end', () => {
+        try {
+          resolve(JSON.parse(raw || '{}'))
+        } catch {
+          resolve({})
+        }
+      })
+      req.on('error', () => resolve({}))
+    })
+
+    const route = (p, fn) => scope.effect(() => routes.register({
+      kind: 'exact',
+      path: p,
+      handler: async (req, res) => {
+        try {
+          await fn(req, res)
+        } catch (e) {
+          send(res, 500, { ok: false, message: String(e?.message || e) })
+        }
+      },
+    }), `chat-atlas route ${p}`)
+
+    route('/atlas/state', async (req, res) => {
+      const url = new URL(String(req.url), 'http://localhost')
+      const sid = url.searchParams.get('sessionId') || ''
+      const store = readStore()
+      const role = sid ? roleOf(sid) : null
+      send(res, 200, { ok: true, mode: store.mode, role, roles: roleMeta(), progress: progressReport() })
+    })
+
+    route('/atlas/role', async (req, res) => {
+      const payload = await body(req)
+      const sid = String(payload.sessionId || '')
+      if (!sid) return send(res, 400, { ok: false, message: '缺少 sessionId' })
+      try {
+        setRole(sid, String(payload.role || ''))
+        send(res, 200, { ok: true, role: payload.role })
+      } catch (e) {
+        send(res, 200, { ok: false, message: String(e.message || e) })
+      }
+    })
+
+    route('/atlas/mode', async (req, res) => {
+      const payload = await body(req)
+      const s = readStore()
+      s.mode = payload.mode === 'auto' ? 'auto' : 'manual'
+      writeStore(s)
+      send(res, 200, { ok: true, mode: s.mode })
+    })
+
+    route('/atlas/graph', async (req, res) => {
+      const entries = listEntries()
+      const ids = new Set(entries.map((e) => e.id))
+      const edges = []
+      for (const e of entries) for (const l of e.links || []) if (ids.has(l)) edges.push({ a: e.id, b: l })
+      send(res, 200, {
+        ok: true,
+        nodes: entries.map((e) => ({ id: e.id, title: e.title, kind: e.kind, subject: e.subject, tags: e.tags })),
+        edges,
+      })
+    })
+
+    route('/atlas/browse', async (req, res) => {
+      const url = new URL(String(req.url), 'http://localhost')
+      const data = browse(url.searchParams.get('path') || '')
+      send(res, 200, data ? { ok: true, ...data } : { ok: false, message: '目录不存在' })
+    })
+
+    route('/atlas/entry', async (req, res) => {
+      const url = new URL(String(req.url), 'http://localhost')
+      const e = readEntry(url.searchParams.get('id') || '')
+      send(res, 200, e ? { ok: true, entry: { id: e.id, title: e.title, kind: e.kind, body: e.body, tags: e.tags } } : { ok: false })
+    })
+  })
+}
+
+export { apply, inject, name }

@@ -1,0 +1,13 @@
+# chat-atlas：三条插件行，共享一个 host/core.js
+# - atlas-memory  记忆库（文件 + 检索 + 工具）
+# - atlas-role    角色（六个人格 + 每个会话的选择 + UI 数据接口）
+# - atlas-context 上下文（每轮自动检索相关记忆）
+- insert:
+    - id: atlas-ui
+      name: '@local/chat-atlas'
+    - id: atlas-memory
+      name: '@local/chat-atlas/memory'
+    - id: atlas-role
+      name: '@local/chat-atlas/role'
+    - id: atlas-context
+      name: '@local/chat-atlas/context'

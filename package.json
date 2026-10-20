@@ -1,0 +1,34 @@
+{
+  "name": "@local/chat-atlas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chat Atlas: role studio + memory atlas + context loom for DeepSeek Harness",
+  "exports": {
+    ".": "./host/index.js",
+    "./memory": "./host/memory.js",
+    "./role": "./host/role.js",
+    "./context": "./host/context.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "host",
+    "client.js",
+    "roles",
+    "locale",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
