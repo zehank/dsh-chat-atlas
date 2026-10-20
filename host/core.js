@@ -23,7 +23,7 @@ export const KINDS = {
   science: { dir: 'science knowledge base', label: 'science knowledge base', hint: '理科实力参考：能力评估 + 已学会的知识点（按科目分目录）' },
   'library-science': { dir: 'library-science', label: '理科图书馆', hint: '外部下载的理科资料（按科目分目录，不重复收录）' },
   'library-philosophy': { dir: 'library-philosophy', label: '哲学图书馆', hint: '哲学文本与思想（按流派/主题自分类）' },
-  portrait: { dir: 'portrait', label: '我的形象', hint: '关于阮泽翰的画像：性格、经历、目标、偏好' },
+  portrait: { dir: 'portrait', label: '我的形象', hint: '关于用户的画像：性格、经历、目标、偏好' },
   'modeling-preference': { dir: 'modeling/preferences', label: '建模要求与偏好', hint: '建模风格、比例、导出格式、硬性要求' },
   'modeling-work': { dir: 'modeling/works', label: '建模成品', hint: '已完成模型的可复用登记（含源文件路径与标签）' },
   plugins: { dir: 'plugins', label: '自制插件库', hint: '每个自研插件的档案：包名、行 id、工具、路由、依赖与兼容注意' },

@@ -38,7 +38,7 @@ function apply(ctx) {
     name: 'memory_save',
     description:
       '把一条新记忆存进记忆库。必须自己判断类别 kind：programming=编程知识；science=已学会的理科知识（需 subject）；' +
-      'library-science=理科资料（需 subject）；library-philosophy=哲学文本（需 category）；portrait=关于阮泽翰的画像；' +
+      'library-science=理科资料（需 subject）；library-philosophy=哲学文本（需 category）；portrait=关于用户的画像；' +
       'modeling-preference=建模要求；modeling-work=建模成品；plugins=自制插件档案；inbox=暂时分不了类。' +
       '【找不到匹配的已有类别时，不要用 custom】：自己总结一个英文主题名，用 kind=library-<主题>（如 library-psychology / ' +
       'library-history）＋ library_label 给中文馆名（如「心理图书馆」），插件会自动建这个一级馆并存进去。' +

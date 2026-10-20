@@ -18,7 +18,7 @@ function progLine() {
   const rows = listEntries().filter((e) => e.kind === 'programming')
   if (!rows.length) return ''
   const sorted = rows.sort((a, b) => String(b.updated).localeCompare(String(a.updated)))
-  const titles = sorted.slice(0, PROG_MAX).map((e) => e.title.replace(/^阮泽翰 · /, '').slice(0, 24))
+  const titles = sorted.slice(0, PROG_MAX).map((e) => e.title.replace(/^[^·]{1,12} · /, '').slice(0, 24))
   const more = sorted.length > titles.length ? ` …共 ${sorted.length} 条` : ''
   return `编程库（${rows.length}）：${titles.join(' / ')}${more}`
 }
@@ -31,7 +31,7 @@ function folderLine() {
 
 function short(label) {
   return String(label)
-    // 这两个馆的目录名/显示名是英文（阮泽翰要求的），但每轮注入的目录索引要短
+    // 这两个馆的目录名/显示名是英文（用户要求的），但每轮注入的目录索引要短
     .replace('science knowledge base', '理科')
     .replace('programming knowledge base', '编程')
     .replace('知识储备', '').replace('图书馆', '馆').replace('我的形象', '画像')
