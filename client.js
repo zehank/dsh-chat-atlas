@@ -365,6 +365,25 @@ window.__ModuleLoader__.load({
         } catch (e) {}
         return { w: 520, h: 600 }
       })
+      const [pos, setPos] = useState(() => {
+        try {
+          const saved = JSON.parse(window.localStorage.getItem('chat-atlas:panel-pos') || 'null')
+          if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return { x: saved.x, y: saved.y }
+        } catch (e) {}
+        return null
+      })
+      useEffect(() => {
+        try {
+          if (pos) window.localStorage.setItem('chat-atlas:panel-pos', JSON.stringify(pos))
+          else window.localStorage.removeItem('chat-atlas:panel-pos')
+        } catch (e) {}
+      }, [pos])
+      useEffect(() => {
+        const onResize = () => setPos((p) => (p ? { x: Math.min(Math.max(8, p.x), Math.max(8, window.innerWidth - size.w - 8)), y: Math.min(Math.max(8, p.y), Math.max(8, window.innerHeight - 60)) } : p))
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
+      }, [size.w])
+      const panelRef = useRef(null)
       const canvasRef = useRef(null)
       const posRef = useRef(null)
       const viewRef = useRef({ x: 0, y: 0, k: 1 })
@@ -644,10 +663,35 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const startDrag = (e) => {
+        if (e.button !== 0) return
+        if (e.target && e.target.closest && e.target.closest('button')) return
+        const panel = panelRef.current
+        if (!panel) return
+        e.preventDefault()
+        const rect = panel.getBoundingClientRect()
+        const sx = e.clientX
+        const sy = e.clientY
+        const move = (ev) => {
+          const x = Math.max(8, Math.min(window.innerWidth - size.w - 8, rect.left + (ev.clientX - sx)))
+          const y = Math.max(8, Math.min(window.innerHeight - 60, rect.top + (ev.clientY - sy)))
+          setPos({ x, y })
+        }
+        const stop = () => {
+          window.removeEventListener('mousemove', move)
+          window.removeEventListener('mouseup', stop)
+        }
+        window.addEventListener('mousemove', move)
+        window.addEventListener('mouseup', stop)
+      }
+
       const canUp = !!detail || path !== ''
       return h('div', {
+        ref: panelRef,
         style: {
-          position: 'fixed', ...(side === 'left' ? { left: 24 } : { right: 24 }), bottom: 268, width: size.w, height: size.h, zIndex: 60,
+          position: 'fixed',
+          ...(pos ? { left: pos.x, top: pos.y } : side === 'left' ? { left: 24, bottom: 268 } : { right: 24, bottom: 268 }),
+          width: size.w, height: size.h, zIndex: 60,
           background: C.bg, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden',
           boxShadow: '0 12px 40px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column', pointerEvents: 'auto',
         },
@@ -661,7 +705,11 @@ window.__ModuleLoader__.load({
             background: 'linear-gradient(135deg, transparent 52%, var(--dsw-alias-label-tertiary) 52%, var(--dsw-alias-label-tertiary) 62%, transparent 62%, transparent 72%, var(--dsw-alias-label-tertiary) 72%, var(--dsw-alias-label-tertiary) 82%, transparent 82%)',
           },
         }),
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${C.border}` } },
+        h('div', {
+          onMouseDown: startDrag,
+          title: '拖动标题栏移动窗口',
+          style: { display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${C.border}`, cursor: 'move', userSelect: 'none' },
+        },
           h('button', {
             onClick: up, disabled: !canUp,
             title: '返回上一级',
