@@ -5,13 +5,14 @@
  * 取前几条的标题 + 摘要 + id。没有命中就只留目录索引，不占预算。
  */
 import { folderTree, excerpt, search, listEntries } from './core.js'
-import { roleOf } from './role.js'
 
 const name = 'context-loom'
 const inject = ['systemPrompt']
 
 const MAX_CHARS = 1100
 const PROG_MAX = 25
+/** 第一人称 / 情绪类问句：把「我的画像」提上来，别让书目压过它。 */
+const PERSONAL = /我|最近|感觉|觉得|心里|情绪|难受|焦虑|迷茫|压力|失眠|孤独/
 
 /** 编程库清单：不靠检索命中，每轮常驻，让他会的概念一直在眼前。 */
 function progLine() {
@@ -42,7 +43,7 @@ function build(text) {
   const index = folderLine()
   const prog = progLine()
   const tail = [prog, index].filter(Boolean)
-  const hits = text && text.trim() ? search(text, { limit: 5 }) : []
+  const hits = text && text.trim() ? search(text, { limit: 5, boost: PERSONAL.test(text) ? { portrait: 1.45 } : undefined }) : []
   if (!hits.length) return [...tail, '（本轮没有检索到直接相关的记忆；需要时用 memory_search。）'].join('\n')
   const lines = ['记忆库·本轮相关：']
   let used = 200
@@ -87,7 +88,7 @@ function apply(ctx) {
           order: 8600,
           interpolate: false,
           text: () => {
-            if (roleOf(sid) === 'none') return ''
+            // 「无角色」只表示不套人格，记忆检索照常；记忆是底层能力，不是人格的一部分
             try {
               return build(lastUser.get(agent) || '')
             } catch {

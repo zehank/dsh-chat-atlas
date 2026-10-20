@@ -251,7 +251,7 @@ export function invalidate() {
   cache = { at: 0, entries: [] }
 }
 
-/* ── 检索：CJK bigram + 拉丁词，BM25 风格 ─────────────────────── */
+/* ── 检索：CJK 1/2/3-gram + 拉丁词，BM25 + 词面加成 + 图扩散 ──── */
 
 export function tokenize(text) {
   const out = []
@@ -261,11 +261,25 @@ export function tokenize(text) {
     const s = m[0]
     for (let i = 0; i < s.length; i++) out.push(s[i])
     for (let i = 0; i + 1 < s.length; i++) out.push(s.slice(i, i + 2))
+    for (let i = 0; i + 2 < s.length; i++) out.push(s.slice(i, i + 3))
   }
   return out
 }
 
-export function search(query, { limit = 6, kinds } = {}) {
+/** 让「原句里出现过这个词」比零散命中更强。 */
+function phraseBonus(e, raw) {
+  const q = String(raw || '').trim().toLowerCase()
+  if (q.length < 2) return 1
+  let k = 1
+  if (e.title.toLowerCase().includes(q)) k += 0.5
+  for (const t of e.tags || []) {
+    const tag = String(t).toLowerCase()
+    if (q.includes(tag) && tag.length >= 2) { k += 0.35; break }
+  }
+  return k
+}
+
+export function search(query, { limit = 6, kinds, expand = true, boost } = {}) {
   const entries = listEntries()
   const q = tokenize(query)
   if (!q.length) return []
@@ -277,8 +291,8 @@ export function search(query, { limit = 6, kinds } = {}) {
     const body = tokenize(e.body)
     const tf = new Map()
     const add = (t, w) => tf.set(t, (tf.get(t) || 0) + w)
-    for (const t of title) add(t, 4)
-    for (const t of tags) add(t, 2)
+    for (const t of title) add(t, 5)
+    for (const t of tags) add(t, 3)
     for (const t of body) add(t, 1)
     for (const t of tf.keys()) df.set(t, (df.get(t) || 0) + 1)
     return { e, tf, len: title.length + tags.length + body.length }
@@ -296,9 +310,33 @@ export function search(query, { limit = 6, kinds } = {}) {
       const idf = Math.log(1 + (N - df.get(t) + 0.5) / (df.get(t) + 0.5))
       score += idf * ((f * (k1 + 1)) / (f + k1 * (1 - b + (b * d.len) / avg)))
     }
-    if (score > 0) scored.push({ ...d.e, score })
+    if (score <= 0) continue
+    score *= phraseBonus(d.e, query)
+    if (boost && boost[d.e.kind]) score *= boost[d.e.kind]
+    // 最近更新过的轻微加权，避免老条目永远压住新结论
+    const age = Date.now() - Date.parse(d.e.updated || 0)
+    if (Number.isFinite(age)) score *= 1 + Math.max(0, 0.08 - age / (1000 * 60 * 60 * 24 * 365) * 0.08)
+    scored.push({ ...d.e, score })
   }
   scored.sort((a, b2) => b2.score - a.score)
+
+  // 一跳图扩散：命中条目的 links 邻居按 0.45 倍分补进来
+  if (expand && scored.length) {
+    const byId = new Map(entries.map((e) => [e.id, e]))
+    const seen = new Set(scored.map((s) => s.id))
+    const extra = []
+    for (const hit of scored.slice(0, 3)) {
+      for (const lid of hit.links || []) {
+        if (seen.has(lid)) continue
+        const t = byId.get(lid)
+        if (!t) continue
+        seen.add(lid)
+        extra.push({ ...t, score: hit.score * 0.45, via: hit.id })
+      }
+    }
+    scored.push(...extra)
+    scored.sort((a, b2) => b2.score - a.score)
+  }
   return scored.slice(0, limit)
 }
 
