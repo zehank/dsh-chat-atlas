@@ -15,6 +15,48 @@ const PROG_MAX = 25
 /** 第一人称 / 情绪类问句：把「我的画像」提上来，别让书目压过它。 */
 const PERSONAL = /我|最近|感觉|觉得|心里|情绪|难受|焦虑|迷茫|压力|失眠|孤独/
 
+/**
+ * 「新事实自动入库」——阮泽翰 2026-10-20 要求：他自己身上出现新的可复用信息
+ * （设备、账号、身份、偏好、决定、习惯、边界）时，模型要当轮就写进记忆库，
+ * 不等他提醒。这里做两件事：
+ *   1. 每轮带一条纪律（轻，约 80 字）；
+ *   2. 从本轮用户原话里挑出「像是自述事实」的句子，直接点名提醒。
+ * 只挑陈述句（排除问句），最多两句，避免把预算花在噪声上。
+ */
+const FACT_STRONG = /(我的(?:手机|电脑|邮箱|账号|生日|家|学校|专业|工作|名字|车|房间)|我是[^？?。！!\n]{2,20}|我(?:用|装了|买了|换了|住在|在[^？?。！!\n]{1,8}(?:上学|工作|住))|记一下|记住[：:，,]?)/
+const FACT_SOFT = /我(?:不|很|更|也)?(?:喜欢|讨厌|习惯|打算|准备|受不了|一般|不玩|不用)/
+/** 「我喜欢这个方案」这种是在评当下这件事，不是关于他本人的事实。 */
+const POINTING = /(这|那)(个|款|种|条|版|次)/
+const QUESTION = /[?？]\s*$/
+
+function detectFacts(text) {
+  if (!text || text.length > 1200) return []
+  const sentences = String(text)
+    .split(/[。！!？?\n；;]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const hits = []
+  for (const s of sentences) {
+    if (QUESTION.test(s)) continue
+    const strong = FACT_STRONG.test(s)
+    if (!s.includes('我') && !/记一下|记住/.test(s)) continue
+    const soft = FACT_SOFT.test(s) && !POINTING.test(s)
+    if (!strong && !soft) continue
+    hits.push(s.length > 60 ? s.slice(0, 60) + '…' : s)
+    if (hits.length >= 2) break
+  }
+  return hits
+}
+
+function discipline(text) {
+  const out = [
+    '【画像纪律】他这句里出现关于他自己的新事实（设备 / 账号 / 身份 / 偏好 / 决定 / 习惯 / 边界）→ 同一轮内就 memory_save(kind=portrait) 或 memory_update 旧条目，不要等他提醒，也不要只口头答应。',
+  ]
+  const facts = detectFacts(text)
+  if (facts.length) out.push('　可能是新事实：“' + facts.join('”“') + '”')
+  return out.join('\n')
+}
+
 /** 编程库清单：不靠检索命中，每轮常驻，让他会的概念一直在眼前。 */
 function progLine() {
   const rows = listEntries().filter((e) => e.kind === 'programming')
@@ -48,7 +90,7 @@ function build(text, vec) {
   const lexical = text && text.trim() ? search(text, { limit: 8, boost }) : []
   const semantic = vec ? semanticTop(vec, { limit: 8 }) : []
   const hits = vec ? fuseHybrid(lexical, semantic, 5) : lexical.slice(0, 5)
-  if (!hits.length) return [...tail, '（本轮没有检索到直接相关的记忆；需要时用 memory_search。）'].join('\n')
+  if (!hits.length) return [...tail, '（本轮没有检索到直接相关的记忆；需要时用 memory_search。）', discipline(text)].join('\n')
   const lines = ['记忆库·本轮相关：']
   let used = 200
   for (const h of hits) {
@@ -60,6 +102,7 @@ function build(text, vec) {
   }
   lines.push('要读全文用 memory_read <id>；要更多用 memory_search。')
   lines.push(...tail)
+  lines.push(discipline(text))
   return lines.join('\n')
 }
 
@@ -131,4 +174,4 @@ function apply(ctx) {
   })
 }
 
-export { apply, build, inject, name }
+export { apply, build, detectFacts, inject, name }

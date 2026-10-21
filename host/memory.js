@@ -9,7 +9,7 @@ import path from 'node:path'
 import {
   KINDS, MEM, SUBJECTS, ensureDirs, excerpt, folderTree, invalidate,
   libraryKind, listEntries, progressReport, readEntry, readProgress, registerLibrary,
-  search, semanticTop, fuseHybrid, syllabusNodes, tool, writeEntry, writeProgress,
+  search, semanticTop, fuseHybrid, syllabusNodes, tool, updateEntry, writeEntry, writeProgress,
 } from './core.js'
 import { embed } from './embed.js'
 
@@ -182,24 +182,9 @@ function apply(ctx) {
     },
     output: jsonOutput({ id: { type: 'string' } }),
     execute(args) {
-      const e = readEntry(args.id)
-      if (!e) return fail(`没有 id 为 ${args.id} 的条目`)
-      const title = args.title || e.title
-      const body = args.content === undefined || args.content === '' ? e.body : args.content
-      const file = writeEntry({
-        id: e.id,
-        title,
-        body,
-        kind: e.kind,
-        subject: e.subject,
-        category: e.category,
-        tags: Array.isArray(args.tags) ? args.tags : e.tags,
-        links: Array.isArray(args.links) ? args.links : e.links,
-        source: args.source ?? e.source,
-        created: e.created,
-      })
-      if (file !== e.file) fs.rmSync(e.file, { force: true })
-      return ok(`已更新 ${e.id}：${title}`, { id: e.id })
+      const rec = updateEntry(args.id, args)
+      if (!rec) return fail(`没有 id 为 ${args.id} 的条目`)
+      return ok(`已更新 ${rec.id}：${rec.title}`, { id: rec.id })
     },
   }))
 

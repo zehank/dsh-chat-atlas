@@ -429,6 +429,34 @@ export function writeEntry({ id, title, body, kind, subject, category, tags = []
   return { ...record, file }
 }
 
+/**
+ * 原地更新一条记忆（id 不变）。
+ *
+ * 坑：writeEntry 返回的是**记录对象**，不是路径。旧版 memory_update 把返回值当字符串
+ * 和 e.file 比，永远不相等，于是把刚写好的文件又删了（2026-10-20 丢了两次条目）。
+ * 这里只比较 record.file，且路径相同绝不删。
+ */
+export function updateEntry(id, patch = {}) {
+  const e = readEntry(id)
+  if (!e) return null
+  const title = patch.title || e.title
+  const body = patch.content === undefined || patch.content === '' ? e.body : patch.content
+  const record = writeEntry({
+    id: e.id,
+    title,
+    body,
+    kind: e.kind,
+    subject: e.subject,
+    category: e.category,
+    tags: Array.isArray(patch.tags) ? patch.tags : e.tags,
+    links: Array.isArray(patch.links) ? patch.links : e.links,
+    source: patch.source ?? e.source,
+    created: e.created,
+  })
+  if (record?.file && record.file !== e.file) fs.rmSync(e.file, { force: true })
+  return record
+}
+
 export function readEntry(id) {
   const e = listEntries().find((x) => x.id === id)
   if (!e) return null
