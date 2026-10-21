@@ -211,6 +211,8 @@ window.__ModuleLoader__.load({
     /* ── 记忆星图（分层 + 相关度连线，Obsidian 风格）────────── */
 
     const SIZE_KEY = 'chat-atlas:panel-size'
+    /** 顶部留给 Harness 自己的标题栏/拖动区，面板不能压进去 */
+    const TOP_SAFE = 84
 
     const FOLDER_COLOR = {
       programming: '#3fb950',
@@ -368,7 +370,12 @@ window.__ModuleLoader__.load({
       const [pos, setPos] = useState(() => {
         try {
           const saved = JSON.parse(window.localStorage.getItem('chat-atlas:panel-pos') || 'null')
-          if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return { x: saved.x, y: saved.y }
+          if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+            return {
+              x: Math.max(8, Math.min(saved.x, window.innerWidth - 52)),
+              y: Math.max(TOP_SAFE, Math.min(saved.y, window.innerHeight - 52)),
+            }
+          }
         } catch (e) {}
         return null
       })
@@ -379,7 +386,7 @@ window.__ModuleLoader__.load({
         } catch (e) {}
       }, [pos])
       useEffect(() => {
-        const onResize = () => setPos((p) => (p ? { x: Math.min(Math.max(8, p.x), Math.max(8, window.innerWidth - size.w - 8)), y: Math.min(Math.max(8, p.y), Math.max(8, window.innerHeight - 60)) } : p))
+        const onResize = () => setPos((p) => (p ? { x: Math.min(Math.max(8, p.x), Math.max(8, window.innerWidth - size.w - 8)), y: Math.min(Math.max(TOP_SAFE, p.y), Math.max(TOP_SAFE, window.innerHeight - 60)) } : p))
         window.addEventListener('resize', onResize)
         return () => window.removeEventListener('resize', onResize)
       }, [size.w])
@@ -674,7 +681,7 @@ window.__ModuleLoader__.load({
         const sy = e.clientY
         const move = (ev) => {
           const x = Math.max(8, Math.min(window.innerWidth - size.w - 8, rect.left + (ev.clientX - sx)))
-          const y = Math.max(8, Math.min(window.innerHeight - 60, rect.top + (ev.clientY - sy)))
+          const y = Math.max(TOP_SAFE, Math.min(window.innerHeight - 60, rect.top + (ev.clientY - sy)))
           setPos({ x, y })
         }
         const stop = () => {
@@ -793,7 +800,12 @@ window.__ModuleLoader__.load({
       const [pos, setPos] = useState(() => {
         try {
           const saved = JSON.parse(window.localStorage.getItem(BALL_KEY) || 'null')
-          if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return { x: saved.x, y: saved.y }
+          if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+            return {
+              x: Math.max(8, Math.min(saved.x, window.innerWidth - 52)),
+              y: Math.max(TOP_SAFE, Math.min(saved.y, window.innerHeight - 52)),
+            }
+          }
         } catch (e) {}
         return { x: window.innerWidth - 68, y: window.innerHeight - 244 }
       })
