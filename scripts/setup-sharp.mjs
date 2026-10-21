@@ -7,8 +7,9 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pnpmDir = path.join(root, 'node_modules', '.pnpm')
 if (!fs.existsSync(pnpmDir)) {
   console.log('没有 node_modules/.pnpm，先跑 pnpm install')

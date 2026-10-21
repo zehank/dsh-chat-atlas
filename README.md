@@ -26,12 +26,24 @@ DeepSeek Harness（DSH）插件：**角色 / 记忆 / 上下文** 三件套。
 
 ## 安装
 
+macOS / Linux：
+
 ```bash
 git clone https://github.com/zehank/dsh-chat-atlas.git
 cd dsh-chat-atlas
 pnpm install
 node scripts/setup-sharp.mjs   # 文本检索用不到 sharp 的图片处理，换成空壳
 dsh plugin --profile desktop add "$(pwd)"
+```
+
+Windows（PowerShell）：
+
+```powershell
+git clone https://github.com/zehank/dsh-chat-atlas.git
+cd dsh-chat-atlas
+pnpm install
+node scripts/setup-sharp.mjs
+dsh plugin --profile desktop add (Get-Location).Path
 ```
 
 语义模型（`Xenova/multilingual-e5-small`，约 130MB）不随仓库分发：首次启动时如果 `models/`
