@@ -612,16 +612,39 @@ window.__ModuleLoader__.load({
         return () => canvas.removeEventListener('wheel', onWheel)
       }, [graph, mode])
 
-      const startResize = (e) => {
+      const startResize = (dir, e) => {
+        if (e.button !== 0) return
         e.preventDefault()
         e.stopPropagation()
+        const panel = panelRef.current
+        if (!panel) return
+        const rect = panel.getBoundingClientRect()
+        const start = { x: rect.left, y: rect.top, w: rect.width, h: rect.height }
         const sx = e.clientX
         const sy = e.clientY
-        const sw = size.w
-        const sh = size.h
+        setPos({ x: start.x, y: start.y })
         const move = (ev) => {
-          const w = Math.max(320, Math.min(window.innerWidth - 60, sw + (ev.clientX - sx)))
-          const hh = Math.max(320, Math.min(window.innerHeight - 300, sh + (ev.clientY - sy)))
+          const dx = ev.clientX - sx
+          const dy = ev.clientY - sy
+          let { x, y, w, h: hh } = start
+          if (dir.includes('e')) w = start.w + dx
+          if (dir.includes('s')) hh = start.h + dy
+          if (dir.includes('w')) { w = start.w - dx; x = start.x + dx }
+          if (dir.includes('n')) { hh = start.h - dy; y = start.y + dy }
+          const MIN = 320
+          if (w < MIN) {
+            if (dir.includes('w')) x = start.x + start.w - MIN
+            w = MIN
+          }
+          if (hh < MIN) {
+            if (dir.includes('n')) y = start.y + start.h - MIN
+            hh = MIN
+          }
+          if (x < 8) { w += x - 8; x = 8 }
+          if (y < TOP_SAFE) { hh += y - TOP_SAFE; y = TOP_SAFE }
+          if (x + w > window.innerWidth - 8) w = Math.max(MIN, window.innerWidth - 8 - x)
+          if (y + hh > window.innerHeight - 8) hh = Math.max(MIN, window.innerHeight - 8 - y)
+          setPos({ x, y })
           setSize({ w, h: hh })
         }
         const stop = () => {
@@ -631,6 +654,12 @@ window.__ModuleLoader__.load({
         window.addEventListener('mousemove', move)
         window.addEventListener('mouseup', stop)
       }
+
+      const handle = (dir, style, cursor) => h('div', {
+        key: 'rz-' + dir,
+        onMouseDown: (e) => startResize(dir, e),
+        style: { position: 'absolute', zIndex: 3, cursor, ...style },
+      })
 
       const listRows = []
       if (mode === 'list' && data) {
@@ -703,11 +732,19 @@ window.__ModuleLoader__.load({
           boxShadow: '0 12px 40px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column', pointerEvents: 'auto',
         },
       },
+        handle('n', { left: 12, right: 12, top: 0, height: 6 }, 'ns-resize'),
+        handle('s', { left: 12, right: 12, bottom: 0, height: 6 }, 'ns-resize'),
+        handle('w', { top: 12, bottom: 12, left: 0, width: 6 }, 'ew-resize'),
+        handle('e', { top: 12, bottom: 12, right: 0, width: 6 }, 'ew-resize'),
+        handle('nw', { left: 0, top: 0, width: 12, height: 12 }, 'nwse-resize'),
+        handle('ne', { right: 0, top: 0, width: 12, height: 12 }, 'nesw-resize'),
+        handle('sw', { left: 0, bottom: 0, width: 12, height: 12 }, 'nesw-resize'),
         h('div', {
-          onMouseDown: startResize,
+          key: 'rz-se',
+          onMouseDown: (e) => startResize('se', e),
           title: '拖动调整大小',
           style: {
-            position: 'absolute', right: 0, bottom: 0, width: 16, height: 16, zIndex: 2,
+            position: 'absolute', right: 0, bottom: 0, width: 16, height: 16, zIndex: 3,
             cursor: 'nwse-resize',
             background: 'linear-gradient(135deg, transparent 52%, var(--dsw-alias-label-tertiary) 52%, var(--dsw-alias-label-tertiary) 62%, transparent 62%, transparent 72%, var(--dsw-alias-label-tertiary) 72%, var(--dsw-alias-label-tertiary) 82%, transparent 82%)',
           },
