@@ -75,31 +75,72 @@ window.__ModuleLoader__.load({
       }, h('div', { style: { width: `${pct > 0 ? Math.max(2, pct) : 0}%`, height: '100%', background: color, borderRadius: 2, transition: 'width .4s' } }))
     }
 
-    function Card({ role, active, onPick }) {
+    /* 角色条：平时只占一行；点「角色 ▾」展开胶囊列表，点「—」整条收成角落小胶囊。
+       角色从 6 个涨到 9 个之后，四列大卡片太吃版面，这里换成可收起 / 可最小化的紧凑形态。 */
+    const MIN_KEY = 'chat-atlas:role-min'
+
+    function readMin() {
+      try { return window.localStorage.getItem(MIN_KEY) === '1' } catch (e) { return false }
+    }
+
+    function saveMin(v) {
+      try { window.localStorage.setItem(MIN_KEY, v ? '1' : '0') } catch (e) {}
+    }
+
+    /** 角色色做成淡底：只接受 #rrggbb，其它（比如 var()）退回中性灰 */
+    const tint = (c, a) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? c + a : 'rgba(127,127,127,.12)')
+
+    const SOFT_CHIP = {
+      display: 'inline-flex', alignItems: 'center', gap: 7, alignSelf: 'flex-start', maxWidth: '100%',
+      height: 24, padding: '0 10px', borderRadius: 999, cursor: 'pointer',
+      border: `1px solid ${C.track}`, background: 'rgba(127,127,127,.07)',
+      color: C.dim, fontSize: 11, lineHeight: '22px', flex: 'none',
+    }
+
+    function Chip({ title, onClick, children }) {
       const [hover, setHover] = useState(false)
       return h('button', {
-        onClick: () => onPick(role.id),
+        onClick,
+        title,
         onMouseEnter: () => setHover(true),
         onMouseLeave: () => setHover(false),
-        title: role.tagline,
         style: {
-          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, textAlign: 'left',
-          padding: '8px 9px', borderRadius: 10, cursor: 'pointer', boxSizing: 'border-box',
-          border: `1px solid ${active || hover ? role.color : C.border}`,
+          display: 'inline-flex', alignItems: 'center', gap: 4, flex: 'none',
+          height: 22, padding: '0 9px', borderRadius: 999,
+          border: `1px solid ${hover ? C.border : C.track}`,
           background: hover ? C.bg2 : 'transparent',
-          color: C.text, minWidth: 0, transition: 'all .15s',
+          color: hover ? C.text : C.dim,
+          fontSize: 11, lineHeight: '20px', cursor: 'pointer',
+          transition: 'color .12s, background .12s, border-color .12s',
+        },
+      }, children)
+    }
+
+    function Pill({ role, active, disabled, onPick }) {
+      const [hover, setHover] = useState(false)
+      const on = active || hover
+      return h('button', {
+        onClick: () => { if (!disabled) onPick(role.id) },
+        onMouseEnter: () => setHover(true),
+        onMouseLeave: () => setHover(false),
+        title: role.tagline || role.name,
+        style: {
+          display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 'none',
+          padding: '6px 13px 6px 10px', borderRadius: 999, boxSizing: 'border-box',
+          border: `1px solid ${on ? role.color : C.border}`,
+          background: active ? tint(role.color, '1f') : hover ? C.bg2 : 'transparent',
+          color: C.text, fontSize: 13, lineHeight: '18px',
+          cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.55 : 1,
+          transition: 'border-color .13s, background .13s',
         },
       },
-        h('span', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: '100%' } },
-          h('span', { style: { fontSize: 14, lineHeight: '18px', color: role.color, width: 18, textAlign: 'center', flex: 'none' } }, role.icon),
-          h('span', { style: { fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, role.name)),
         h('span', {
           style: {
-            fontSize: 10, color: C.dim, lineHeight: '14px',
-            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-            overflow: 'hidden', maxWidth: '100%',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: 18, height: 18, flex: 'none', color: role.color, fontSize: 15, lineHeight: '18px',
           },
-        }, role.tagline))
+        }, role.icon),
+        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, role.name))
     }
 
     function RoleExtras({ role, progress }) {
@@ -121,8 +162,10 @@ window.__ModuleLoader__.load({
     function RoleBar({ sessionId }) {
       const [data, setData] = useState(null)
       const [open, setOpen] = useState(false)
+      const [min, setMin] = useState(readMin)
       const [err, setErr] = useState('')
       const [busy, setBusy] = useState(false)
+      const listRef = useRef(null)
 
       const load = useCallback(async () => {
         try {
@@ -158,6 +201,21 @@ window.__ModuleLoader__.load({
         }
       }, [load])
 
+      // 角色一行放不下时横向滚：鼠标竖着滚也转成左右滚，触控板横滑原生支持
+      useEffect(() => {
+        const el = listRef.current
+        if (!el) return undefined
+        const onWheel = (e) => {
+          if (el.scrollWidth <= el.clientWidth + 1) return
+          if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+          el.scrollLeft += e.deltaY
+          e.preventDefault()
+        }
+        el.addEventListener('wheel', onWheel, { passive: false })
+        return () => el.removeEventListener('wheel', onWheel)
+        // 依赖里必须有 min：最小化会把列表节点卸载，恢复后要重新绑定，否则滚轮失效
+      }, [open, data, min])
+
       const pick = async (id) => {
         setBusy(true)
         try {
@@ -175,34 +233,88 @@ window.__ModuleLoader__.load({
         await load()
       }
 
+      const setMinimized = (v) => { setMin(v); saveMin(v) }
+
       if (err && !data) return h('div', { style: { fontSize: 11, color: C.dim, padding: '2px' } }, `角色面板：${err}`)
       if (!data) return null
 
+      const auto = data.mode === 'auto'
       const current = data.roles.find((r) => r.id === data.role)
-      const showCards = !current || open
-      const mode = data.mode === 'auto' ? '自动' : '手动'
+      const list = [...data.roles].sort((a, b) => (a.id === 'none' ? 1 : 0) - (b.id === 'none' ? 1 : 0))
+      const showList = open || !current
+      const mode = auto ? '自动' : '手动'
 
-      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, padding: '2px 2px 4px', fontSize: 12, color: C.text } },
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 22 } },
-          current
-            ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
-                h('span', { style: { color: current.color, fontSize: 14 } }, current.icon),
-                h('span', { style: { fontWeight: 600 } }, current.name),
-                h('span', { style: { color: C.dim, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, current.tagline))
-            : h('span', { style: { color: C.dim } }, '选一个角色开始这次会话'),
-          h('div', { style: { flex: 1 } }),
+      // 自动模式：角色由第一句话判定，整条角色栏收起，只留一颗「自动」小胶囊（靠右，点它改回手动）
+      if (auto) {
+        return h('div', { style: { display: 'flex', justifyContent: 'flex-end', width: '100%' } },
           h('button', {
-            onClick: toggleMode, title: '切换手动/自动选择',
-            style: { fontSize: 11, color: C.dim, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 999, padding: '2px 8px', cursor: 'pointer' },
-          }, `${mode}选择`),
-          current ? h('button', {
-            onClick: () => setOpen(!open),
-            style: { fontSize: 11, color: C.dim, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: 999, padding: '2px 8px', cursor: 'pointer' },
-          }, open ? '收起' : '换角色') : null),
+            onClick: toggleMode,
+            title: '角色按第一句话自动判定；点这里改回手动',
+            style: SOFT_CHIP,
+          },
+            h('span', { style: { fontSize: 13, opacity: .85 } }, '⚙'),
+            h('span', null, '自动选择')))
+      }
 
-        showCards
-          ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 } },
-              [...data.roles].sort((a, b) => (a.id === 'none' ? 1 : 0) - (b.id === 'none' ? 1 : 0)).map((r) => h(Card, { key: r.id, role: r, active: r.id === data.role, onPick: busy ? () => {} : pick })))
+      // 最小化：只剩一颗小胶囊，靠右停着；点它回来
+      if (min) {
+        return h('div', { style: { display: 'flex', justifyContent: 'flex-end', width: '100%' } },
+          h('button', {
+            onClick: () => setMinimized(false),
+            title: '展开角色栏',
+            style: { ...SOFT_CHIP, padding: '0 11px 0 6px' },
+          },
+            h('span', {
+              style: {
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 18, height: 18, borderRadius: 6, flex: 'none',
+                background: current ? tint(current.color, '24') : 'transparent',
+                color: current ? current.color : C.dim, fontSize: 13, lineHeight: '18px',
+              },
+            }, current ? current.icon : '✦'),
+            h('span', { style: { color: C.text, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, current ? current.name : '选角色'),
+            h('span', { style: { fontSize: 9, opacity: .6 } }, '▴')))
+      }
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, padding: '2px 2px 3px', fontSize: 12, color: C.text } },
+        h('div', { style: { position: 'relative', display: 'flex', alignItems: 'center', minHeight: 26 } },
+          current
+            ? h('div', {
+                style: {
+                  position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+                  display: 'flex', alignItems: 'center', gap: 8, maxWidth: '58%', pointerEvents: 'none',
+                },
+              },
+                h('span', {
+                  style: {
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 24, height: 24, borderRadius: 8, flex: 'none',
+                    background: tint(current.color, '1f'), color: current.color, fontSize: 15, lineHeight: '24px',
+                  },
+                }, current.icon),
+                h('span', { style: { fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, current.name))
+            : h('span', { style: { position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', color: C.dim, fontSize: 12, whiteSpace: 'nowrap' } }, '选一个角色'),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' } },
+            h(Chip, { onClick: toggleMode, title: '手动 / 自动选择' }, mode),
+            current
+              ? h(Chip, { onClick: () => setOpen(!open), title: open ? '收起角色列表' : '展开角色列表' },
+                  `角色 ${list.length}`,
+                  h('span', { style: { display: 'inline-block', fontSize: 9, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' } }, '▾'))
+              : null,
+            h(Chip, { onClick: () => setMinimized(true), title: '最小化角色栏' }, '—'))),
+
+        showList
+          ? h('div', {
+              ref: listRef,
+              style: {
+                display: 'flex', flexWrap: 'nowrap', gap: 6, boxSizing: 'border-box',
+                overflowX: 'auto', overflowY: 'hidden', maxWidth: '100%',
+                padding: '6px', borderRadius: 14,
+                background: 'rgba(127,127,127,.06)', border: `1px solid ${C.track}`,
+                scrollbarWidth: 'thin',
+              },
+            },
+              list.map((r) => h(Pill, { key: r.id, role: r, active: r.id === data.role, disabled: busy, onPick: pick })))
           : h(RoleExtras, { role: data.role, progress: data.progress }),
 
         err ? h('div', { style: { fontSize: 10, color: C.danger } }, err) : null)

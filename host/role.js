@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { META, USER_ROLES, browse, ensureDirs, listEntries, progressReport, readEntry, readJson, tool, writeJson } from './core.js'
+import { META, USER_ROLES, browse, ensureDirs, excerpt, listEntries, progressReport, readEntry, readJson, tool, writeJson } from './core.js'
 
 const name = 'role-studio'
 const inject = ['tools']
@@ -143,6 +143,48 @@ const COMMON = [
   '- 记忆库是文件，id 是稳定标识；引用记忆时给出 id 或标题。',
 ].join('\n')
 
+/* ── 开屏记忆：角色跨会话的「上次做到哪」 ─────────────────────── */
+
+/** 索引里存的是 UTC ISO；展示用本机时间，避免和日志标题里的本地时间打架。 */
+function localTime(v) {
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return String(v || '').slice(0, 16).replace('T', ' ')
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 需要开场就带上历史记录的角色。角色 JSON 里写 atlas:{kind,category,label,limit} 可以覆盖这里的登记。 */
+const ROLE_DIGESTS = {
+  'win-admin': { kind: 'library-windows', category: '操作日志', label: '操作日志', limit: 5 },
+}
+
+/**
+ * 把角色对应目录里最近的 N 条记录排成文本，随角色提示词一起注入。
+ * 目的：会话一开始就知道上次做到哪、还剩什么待办，不用赌模型自己想起来调工具。
+ * 没配置 / 读不到时返回空串，对其它角色零影响。
+ */
+export function roleDigest(r) {
+  if (!r) return ''
+  const cfg = r.atlas && typeof r.atlas === 'object' ? r.atlas : ROLE_DIGESTS[r.id]
+  if (!cfg || typeof cfg.kind !== 'string') return ''
+  try {
+    const n = Math.max(1, Math.min(Number(cfg.limit) || 5, 8))
+    const rows = listEntries()
+      .filter((e) => e.kind === cfg.kind && (!cfg.category || e.category === cfg.category))
+      .sort((a, b) => String(b.updated).localeCompare(String(a.updated)))
+      .slice(0, n)
+    const where = [r.name || r.id, cfg.label || cfg.kind].filter(Boolean).join(' · ')
+    if (!rows.length) return `【${where}】还没有任何记录：这次是第一次，操作完记得写第一条日志。`
+    return [
+      `【${where}：最近 ${rows.length} 条，最新在前（已自动读入，不必再调工具去翻）】`,
+      ...rows.map((e) => `- ${localTime(e.updated)}《${e.title}》${excerpt(e.body, 120)}`),
+      '要看某条全文用 memory_read <id>；更早的记录用 memory_search。',
+    ].join('\n')
+  } catch {
+    return ''
+  }
+}
+
 /* ── 存储 ────────────────────────────────────────────────────── */
 
 export function readStore() {
@@ -190,7 +232,7 @@ function rolePrompt(id) {
   const r = allRoles().find((x) => x.id === id)
   if (!r) return ''
   if (id === 'none') return ''
-  return `${r.prompt}\n\n${COMMON}`
+  return [r.prompt, roleDigest(r), COMMON].filter(Boolean).join('\n\n')
 }
 
 /** 关键词自动判角色。确定性、零成本；以后可以换成本地模型。 */
