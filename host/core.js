@@ -13,6 +13,8 @@ export const HOME = process.env.DSH_ATLAS_HOME || path.join(os.homedir(), '.dsh'
 export const MEM = path.join(HOME, 'memory')
 export const META = path.join(HOME, 'meta')
 export const USER_ROLES = path.join(HOME, 'roles')
+/** 附件仓库：attachments/<条目 id>/<原文件名>。放在 MEM 之外，免得被当条目索引。 */
+export const ATTACH = path.join(HOME, 'attachments')
 
 export const SUBJECTS = ['math', 'physics', 'chemistry', 'biology']
 export const SUBJECT_ZH = { math: '数学', physics: '物理', chemistry: '化学', biology: '生物' }
@@ -74,6 +76,7 @@ export function ensureDirs() {
   fs.mkdirSync(MEM, { recursive: true })
   fs.mkdirSync(META, { recursive: true })
   fs.mkdirSync(USER_ROLES, { recursive: true })
+  fs.mkdirSync(ATTACH, { recursive: true })
   for (const kind of Object.values(KINDS)) fs.mkdirSync(path.join(MEM, kind.dir), { recursive: true })
   for (const s of SUBJECTS) {
     fs.mkdirSync(path.join(MEM, KINDS.science.dir, s), { recursive: true })
@@ -115,6 +118,14 @@ export function parseEntry(text) {
         const key = line.slice(0, i).trim()
         const value = line.slice(i + 1).trim()
         if (key === 'tags' || key === 'links') meta[key] = parseList(value)
+        else if (key === 'attachments') {
+          try {
+            const v = JSON.parse(value)
+            meta.attachments = Array.isArray(v) ? v : []
+          } catch {
+            meta.attachments = []
+          }
+        }
         else meta[key] = value.replace(/^["']|["']$/g, '')
       }
     }
@@ -134,6 +145,7 @@ export function renderEntry(e) {
   }
   lines.push(`tags: ${yamlValue(e.tags || [])}`)
   lines.push(`links: ${yamlValue(e.links || [])}`)
+  if (Array.isArray(e.attachments) && e.attachments.length) lines.push(`attachments: ${JSON.stringify(e.attachments)}`)
   lines.push('---', '', e.body || '', '')
   return lines.join('\n')
 }
@@ -236,6 +248,7 @@ export function listEntries({ fresh = false } = {}) {
       category: meta.category || loc.category,
       tags: meta.tags || [],
       links: meta.links || [],
+      attachments: Array.isArray(meta.attachments) ? meta.attachments : [],
       source: meta.source || '',
       created: meta.created || '',
       updated: meta.updated || stat.mtime.toISOString(),
@@ -413,7 +426,7 @@ export function fuseHybrid(lexical, semantic, limit = 6) {
 
 /* ── 读写 ────────────────────────────────────────────────────── */
 
-export function writeEntry({ id, title, body, kind, subject, category, tags = [], links = [], source = '', created }) {
+export function writeEntry({ id, title, body, kind, subject, category, tags = [], links = [], attachments = [], source = '', created }) {
   ensureDirs()
   const dir = path.join(MEM, kindDir(kind, subject, category))
   fs.mkdirSync(dir, { recursive: true })
@@ -422,7 +435,7 @@ export function writeEntry({ id, title, body, kind, subject, category, tags = []
   const file = path.join(dir, `${slug(title)}-${eid.slice(-6)}.md`)
   const record = {
     id: eid, title, kind, subject, category, source,
-    tags, links, created: created || now, updated: now, body,
+    tags, links, attachments, created: created || now, updated: now, body,
   }
   fs.writeFileSync(file, renderEntry(record), 'utf8')
   invalidate()
@@ -450,6 +463,7 @@ export function updateEntry(id, patch = {}) {
     category: e.category,
     tags: Array.isArray(patch.tags) ? patch.tags : e.tags,
     links: Array.isArray(patch.links) ? patch.links : e.links,
+    attachments: Array.isArray(patch.attachments) ? patch.attachments : e.attachments,
     source: patch.source ?? e.source,
     created: e.created,
   })
@@ -463,6 +477,90 @@ export function readEntry(id) {
   const full = fs.readFileSync(e.file, 'utf8')
   const { body } = parseEntry(full)
   return { ...e, body }
+}
+
+/* ── 附件 ────────────────────────────────────────────────────── */
+
+const MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8', '.json': 'application/json; charset=utf-8', '.zip': 'application/zip',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.stl': 'model/stl', '.obj': 'text/plain; charset=utf-8', '.blend': 'application/octet-stream',
+}
+
+export function mimeOf(name) {
+  return MIME[path.extname(String(name || '')).toLowerCase()] || 'application/octet-stream'
+}
+
+/** 只去掉路径分隔符和控制字符，中文/空格都保留。 */
+export function safeName(name) {
+  return String(name || '').replace(/[\/\\:*?"<>|\u0000-\u001f]+/g, '-').trim().slice(0, 120) || 'file'
+}
+
+export function entryAttachDir(id) {
+  const dir = path.join(ATTACH, String(id))
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/**
+ * 把 srcPath 复制进 attachments/<条目 id>/，返回写进 frontmatter 的记录。
+ * 原文件不动（他可能还要继续用），记忆里存的是一份独立副本。
+ */
+export function attachFile(id, srcPath) {
+  const st = fs.statSync(srcPath)
+  if (!st.isFile()) throw new Error('只能附文件，不能附目录')
+  const dir = entryAttachDir(id)
+  const base = safeName(path.basename(srcPath))
+  const ext = path.extname(base)
+  let target = path.join(dir, base)
+  for (let n = 2; fs.existsSync(target); n++) target = path.join(dir, `${path.basename(base, ext)}-${n}${ext}`)
+  fs.copyFileSync(srcPath, target)
+  return { name: path.basename(target), size: st.size, mime: mimeOf(target) }
+}
+
+/** 解析附件绝对路径；不允许穿越出该条目的附件目录。 */
+export function attachmentPath(id, name) {
+  const dir = path.join(ATTACH, String(id))
+  const full = path.resolve(dir, safeName(path.basename(String(name || ''))))
+  if (!full.startsWith(path.resolve(dir) + path.sep)) return null
+  try {
+    return fs.statSync(full).isFile() ? full : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 「原地引用」一份已存在的文件，不复制。书、简历原件、导出语料这类大且唯一的文件用它：
+ * 记录里带绝对 path，条目搬走也还指向原处。
+ */
+export function refFile(src) {
+  const full = path.resolve(src)
+  const st = fs.statSync(full)
+  if (!st.isFile()) throw new Error('只能引用文件，不能引用目录')
+  return { name: path.basename(full), size: st.size, mime: mimeOf(full), path: full, external: true }
+}
+
+/** 服务端取附件：原地引用按记录的绝对路径，否则回落到 attachments/<id>/。 */
+export function resolveAttachment(id, name) {
+  const e = readEntry(id)
+  const rec = e && (e.attachments || []).find((a) => a.name === name)
+  if (rec && rec.path) {
+    try {
+      return fs.statSync(rec.path).isFile() ? rec.path : null
+    } catch {
+      return null
+    }
+  }
+  return attachmentPath(id, name)
+}
+
+export function dropAttachments(id) {
+  fs.rmSync(path.join(ATTACH, String(id)), { recursive: true, force: true })
 }
 
 export function folderTree() {

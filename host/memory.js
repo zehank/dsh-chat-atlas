@@ -7,8 +7,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import {
-  KINDS, MEM, SUBJECTS, ensureDirs, excerpt, folderTree, invalidate,
-  libraryKind, listEntries, progressReport, readEntry, readProgress, registerLibrary,
+  KINDS, MEM, SUBJECTS, attachFile, ensureDirs, excerpt, folderTree, invalidate,
+  libraryKind, listEntries, newId, progressReport, readEntry, readProgress, refFile, registerLibrary,
   search, semanticTop, fuseHybrid, syllabusNodes, tool, updateEntry, writeEntry, writeProgress,
 } from './core.js'
 import { embed } from './embed.js'
@@ -30,6 +30,32 @@ const jsonOutput = () => ({
   schema: { type: 'object', additionalProperties: true },
   render: (_a, v) => [{ type: 'text', text: v?.message || (v?.ok === false ? '失败' : '完成') }],
 })
+
+/** 人看的体积：<1KB 按字节，否则 KB。 */
+function sizeLabel(n) {
+  const b = Number(n) || 0
+  return b < 1024 ? `${b}B` : `${Math.round(b / 1024)}KB`
+}
+
+/**
+ * 只有「真文本」才返回内容：超 200KB、含 NUL、或不是合法 UTF-8 一律返回 ''。
+ * 这样做是为了不让 PDF / 图片的字节流变成正文里的乱码（以前正是这个坑）。
+ */
+function readText(p, size) {
+  if (size > 200 * 1024) return ''
+  let buf
+  try {
+    buf = fs.readFileSync(p)
+  } catch {
+    return ''
+  }
+  if (buf.includes(0)) return ''
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf)
+  } catch {
+    return ''
+  }
+}
 
 /** @type {import('@deepseek-ai/cordis').Plugin} */
 function apply(ctx) {
@@ -121,7 +147,17 @@ function apply(ctx) {
     execute(args) {
       const e = readEntry(args.id)
       if (!e) return fail(`没有 id 为 ${args.id} 的条目`)
-      return { ok: true, message: `# ${e.title}\n\n${e.body}`, entry: { id: e.id, title: e.title, kind: e.kind, tags: e.tags, body: e.body } }
+      const atts = e.attachments || []
+      const where = (a) => (a.path ? a.path : `~/.dsh/chat-atlas/attachments/${e.id}/${a.name}`)
+      const tail = atts.length
+        ? '\n\n附件（直接按路径读，别再让用户贴内容）：\n' +
+          atts.map((a) => `- ${a.name}（${sizeLabel(a.size)}，${a.mime || ''}）→ ${where(a)}`).join('\n')
+        : ''
+      return {
+        ok: true,
+        message: `# ${e.title}\n\n${e.body}${tail}`,
+        entry: { id: e.id, title: e.title, kind: e.kind, tags: e.tags, body: e.body, attachments: atts },
+      }
     },
   }))
 
@@ -239,13 +275,16 @@ function apply(ctx) {
 
   ctx.tools.register(tool({
     name: 'memory_import_file',
-    description: '把用户给的文件（工作区里的路径）读进来存成一条记忆。超过 200KB 会拒绝。',
+    description:
+      '把用户给的文件存成一条记忆：原文件复制进附件库（图片/PDF/docx 等二进制也收），' +
+      '文本文件（≤200KB）同时把内容读进正文以便检索。超过 200KB 的文本只存附件、正文留一行占位。',
     parameters: {
       file_path: { type: 'string', required: true, description: '绝对路径或工作区相对路径' },
       kind: { type: 'string', required: true, description: '归到哪一类' },
       subject: { type: 'string', enum: SUBJECTS },
       category: { type: 'string' },
       title: { type: 'string' },
+      note: { type: 'string', description: '要写在正文里的话（给了就用它当正文，不再塞文件原文）' },
       tags: { type: 'array', items: { type: 'string' } },
     },
     output: jsonOutput({ id: { type: 'string' } }),
@@ -262,24 +301,69 @@ function apply(ctx) {
       }
       let p = args.file_path
       if (!path.isAbsolute(p)) p = path.resolve(process.cwd(), p)
-      let text
+      let st
       try {
-        const st = fs.statSync(p)
-        if (st.size > 200 * 1024) return fail('文件超过 200KB，先拆分或摘要再存')
-        text = fs.readFileSync(p, 'utf8')
-      } catch (e) {
+        st = fs.statSync(p)
+        if (!st.isFile()) return fail(`不是文件：${p}`)
+      } catch {
         return fail(`读不到文件：${p}（相对路径按 ${process.cwd()} 解析，建议传绝对路径）`)
       }
+
+      const base = path.basename(p)
+      const kb = sizeLabel(st.size)
+      // 文本才进正文；二进制/文件读成 utf8 会变乱码，宁可不进
+      const text = args.note ? '' : readText(p, st.size)
+      const body = args.note || text || `附件：${base}（${kb}）。内容只在附件里，没有进正文。`
+
+      const eid = newId()
+      let att
+      try {
+        att = attachFile(eid, p)
+      } catch (e) {
+        return fail(`复制附件失败：${String(e?.message || e)}`)
+      }
       const entry = writeEntry({
-        title: args.title || path.basename(p),
-        body: text,
+        id: eid,
+        title: args.title || base,
+        body,
         kind: args.kind,
         subject: args.subject,
         category: args.category,
+        attachments: [att],
         tags: Array.isArray(args.tags) ? args.tags : [],
         source: p,
       })
-      return ok(`已导入 ${path.basename(p)} → ${args.kind}（id ${entry.id}）`, { id: entry.id })
+      const how = args.note ? '正文=你的说明' : text ? '正文=文件原文' : '正文只留占位（二进制或超 200KB）'
+      return ok(`已导入 ${base} → ${args.kind}（id ${entry.id}，附件 ${kb}，${how}）`, { id: entry.id })
+    },
+  }))
+
+  ctx.tools.register(tool({
+    name: 'memory_attach',
+    description: '给已有记忆条目挂一个文件。默认复制进附件库（原文件不动）；mode=ref 只登记原路径、不复制，' +
+      '用于书 / 简历原件 / 导出语料这类大且唯一的文件。',
+    parameters: {
+      id: { type: 'string', required: true, description: '条目 id' },
+      file_path: { type: 'string', required: true, description: '绝对路径或工作区相对路径' },
+      mode: { type: 'string', enum: ['copy', 'ref'], description: 'copy=复制进附件库（默认）；ref=只登记绝对路径' },
+    },
+    output: jsonOutput({ id: { type: 'string' } }),
+    execute(args) {
+      const e = readEntry(args.id)
+      if (!e) return fail(`没有 id 为 ${args.id} 的条目`)
+      let p = args.file_path
+      if (!path.isAbsolute(p)) p = path.resolve(process.cwd(), p)
+      let att
+      try {
+        att = args.mode === 'ref' ? refFile(p) : attachFile(e.id, p)
+      } catch (err) {
+        return fail(`挂附件失败：${String(err?.message || err)}`)
+      }
+      if ((e.attachments || []).some((a) => a.name === att.name && (a.path || '') === (att.path || ''))) {
+        return fail(`这条已经挂过 ${att.name} 了`)
+      }
+      updateEntry(e.id, { attachments: [...(e.attachments || []), att] })
+      return ok(`已挂到 ${e.id}：${att.name}（${sizeLabel(att.size)}${att.path ? '，原地引用' : ''}）`, { id: e.id })
     },
   }))
 

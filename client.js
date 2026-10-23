@@ -459,6 +459,17 @@ window.__ModuleLoader__.load({
       const [data, setData] = useState(null)
       const [graph, setGraph] = useState(null)
       const [detail, setDetail] = useState(null)
+      // 详情窗口高度：可上下拖动，值存本地，下次打开沿用
+      const [detailH, setDetailH] = useState(() => {
+        try {
+          const v = JSON.parse(window.localStorage.getItem('chat-atlas:detail-h') || 'null')
+          if (Number.isFinite(v) && v >= 120) return v
+        } catch (e) {}
+        return 280
+      })
+      useEffect(() => {
+        try { window.localStorage.setItem('chat-atlas:detail-h', JSON.stringify(Math.round(detailH))) } catch (e) {}
+      }, [detailH])
       const [hover, setHover] = useState(null)
       const [mode, setMode] = useState(() => {
         try {
@@ -724,6 +735,25 @@ window.__ModuleLoader__.load({
         return () => canvas.removeEventListener('wheel', onWheel)
       }, [graph, mode])
 
+      /** 详情窗口：拖顶边调高度，上限是面板高度减标题栏和页脚。 */
+      const startDetailResize = (e) => {
+        if (e.button !== 0) return
+        e.preventDefault()
+        e.stopPropagation()
+        const maxH = Math.max(160, (panelRef.current?.getBoundingClientRect().height || 600) - 96)
+        const sy = e.clientY
+        const sh = detailH
+        const move = (ev) => setDetailH(Math.min(maxH, Math.max(120, sh + (sy - ev.clientY))))
+        const up = () => {
+          document.removeEventListener('mousemove', move)
+          document.removeEventListener('mouseup', up)
+          document.body.style.cursor = ''
+        }
+        document.body.style.cursor = 'ns-resize'
+        document.addEventListener('mousemove', move)
+        document.addEventListener('mouseup', up)
+      }
+
       const startResize = (dir, e) => {
         if (e.button !== 0) return
         e.preventDefault()
@@ -921,20 +951,58 @@ window.__ModuleLoader__.load({
           detail
             ? h('div', {
                 style: {
-                  position: 'absolute', left: 8, right: 8, bottom: 8, maxHeight: '52%', overflow: 'auto',
-                  background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px 12px',
-                  boxShadow: '0 8px 28px rgba(0,0,0,.35)',
+                  position: 'absolute', left: 8, right: 8, bottom: 8, height: detailH, maxHeight: 'calc(100% - 16px)',
+                  display: 'flex', flexDirection: 'column',
+                  background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10,
+                  boxShadow: '0 8px 28px rgba(0,0,0,.35)', overflow: 'hidden',
                 },
               },
-                h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 8 } },
-                  h('div', { style: { flex: 1, fontSize: 12.5, fontWeight: 600, color: C.text } }, detail.title),
+                h('div', {
+                  onMouseDown: startDetailResize,
+                  title: '上下拖动调节高度',
+                  style: {
+                    flex: '0 0 auto', height: 12, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: 'ns-resize', background: C.bg2, borderBottom: `1px solid ${C.border}`, userSelect: 'none',
+                  },
+                }, h('div', { style: { width: 44, height: 3, borderRadius: 2, background: C.track } })),
+                h('div', {
+                  style: {
+                    flex: '0 0 auto', display: 'flex', alignItems: 'flex-start', gap: 8,
+                    padding: '7px 10px 6px', borderBottom: `1px solid ${C.border}`,
+                  },
+                },
+                  h('div', { style: { flex: 1, minWidth: 0 } },
+                    h('div', { style: { fontSize: 12.5, fontWeight: 600, color: C.text } }, detail.title),
+                    h('div', { style: { fontSize: 10, color: C.dim, marginTop: 2 } },
+                      detail.kind, detail.tags?.length ? ' · #' + detail.tags.join(' #') : '')),
                   h('button', {
                     onClick: () => setDetail(null),
-                    style: { background: 'transparent', border: 'none', color: C.dim, cursor: 'pointer', fontSize: 14, lineHeight: '14px' },
+                    title: '关闭',
+                    style: {
+                      flex: '0 0 auto', width: 22, height: 22, borderRadius: 6,
+                      background: C.bg2, border: `1px solid ${C.border}`, color: C.text,
+                      cursor: 'pointer', fontSize: 15, lineHeight: '18px', padding: 0,
+                    },
                   }, '×')),
-                h('div', { style: { fontSize: 10, color: C.dim, margin: '6px 0 8px' } },
-                  detail.kind, detail.tags?.length ? ' · #' + detail.tags.join(' #') : ''),
-                h('div', { style: { fontSize: 12, lineHeight: '19px', color: C.text, whiteSpace: 'pre-wrap' } }, detail.body || '（空）'))
+                h('div', { style: { flex: 1, minHeight: 0, overflow: 'auto', padding: '8px 12px 12px' } },
+                  h('div', { style: { fontSize: 12, lineHeight: '19px', color: C.text, whiteSpace: 'pre-wrap' } }, detail.body || '（空）'),
+                  detail.attachments?.length
+                    ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 } },
+                        ...detail.attachments.map((a) => h('a', {
+                          key: a.name,
+                          href: `/atlas/file?id=${encodeURIComponent(detail.id)}&name=${encodeURIComponent(a.name)}`,
+                          target: '_blank',
+                          rel: 'noreferrer',
+                          title: `${a.name} · ${(a.size || 0) < 1024 ? (a.size || 0) + 'B' : Math.round((a.size || 0) / 1024) + 'KB'}（点击打开，右键另存）`,
+                          style: {
+                            display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%',
+                            padding: '3px 8px', borderRadius: 6, border: `1px solid ${C.border}`,
+                            background: C.bg2, color: C.accent, fontSize: 11, textDecoration: 'none',
+                          },
+                        },
+                          h('span', { style: { opacity: 0.8 } }, '📎'),
+                          h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, a.name))))
+                    : null))
             : null),
 
         h('div', { style: { padding: '6px 12px', fontSize: 10, color: C.dim, borderTop: `1px solid ${C.border}` } },

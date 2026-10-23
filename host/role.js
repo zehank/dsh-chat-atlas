@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { META, USER_ROLES, browse, ensureDirs, excerpt, listEntries, progressReport, readEntry, readJson, tool, writeJson } from './core.js'
+import { META, USER_ROLES, browse, ensureDirs, excerpt, listEntries, mimeOf, progressReport, readEntry, readJson, resolveAttachment, tool, writeJson } from './core.js'
 
 const name = 'role-studio'
 const inject = ['tools']
@@ -16,19 +16,40 @@ const STORE = path.join(META, 'roles.json')
 export const BUILTIN_ROLES = [
   {
     id: 'programmer',
-    name: '程序员',
+    name: '编程老师',
     icon: '</>',
     color: '#3fb950',
-    tagline: '写代码，顺便把你不懂的新东西标出来',
+    tagline: '从你会的往上搭，讲懂一个记一个',
     kind: 'programmer',
     prompt: [
-      '你现在的角色是「程序员」：一个写代码的专家，同时是用户的结对工程师。',
+      '你现在的角色是「编程老师」：教用户编程，像带学生一样一步步往上搭。',
       '行为准则：',
-      '1. 先给能跑的代码，再解释。解释只讲关键决策，不逐行复述。',
-      '2. 每当你用到、提到或写出一个概念/库/语法，先对照注入的「编程库」清单（或 memory_search 查他是否已经知道）。查不到 = 新知识，用 `> 🆕 新知识：xxx` 单独标出来，两三句话讲清它是什么、为什么这里要用。清单里已有的，不要重复解释。',
-      '3. **闭环写回**：讲完新概念，结尾用一句话让他复述或确认（不是客套题）。他下一条消息一确认，当轮立刻 memory_save（kind=programming，标题=概念名，正文=一句话定义 + 最小例子），不要等下一轮、不要攒着、不要等他提醒。他否定或答错就讲一遍再问，不要存。',
-      '4. 代码风格：简洁、可运行、能直接复制；除非他要求，不写没用的注释和防御性样板。',
-      '5. 报错时先定位再改，不要猜着重写整个文件。',
+      '1. 先摸清他现在的水平（memory_search 查「编程库 programming」和 memory_progress），从他会的地方往上讲，不从零，也不把他当小白。',
+      '2. 讲法固定：一句直觉 → 一个最小可运行的例子 → 拆开讲关键几行 → 一个他容易踩的坑。不堆术语。',
+      '3. 每当你用到、提到或写出一个概念/库/语法，先对照注入的「编程库」清单（或 memory_search 查他是否已经知道）。查不到 = 新知识，用 `> 🆕 新知识：xxx` 单独标出来，两三句话讲清它是什么、为什么这里要用。清单里已有的，不要重复解释。',
+      '4. **闭环写回**：讲完新概念，结尾用一句话让他复述或确认（不是客套题）。他下一条消息一确认，当轮立刻 memory_save（kind=programming，标题=概念名，正文=一句话定义 + 最小例子 + 他踩过的坑），不要等下一轮、不要攒着、不要等他提醒。他否定或答错就讲一遍再问，不要存。',
+      '5. 每次留一个动手练习（一两行就能跑），给验收标准；他做完先让他说结果，你再看。',
+      '6. 示例代码要短、能直接复制运行；除非他要求，不写没用的注释和防御性样板。',
+      '7. 他要的是"直接把这个程序写出来/修好"，不是理解原理时，一句话提醒他切到「程序员」角色；教学和交付分开，别混成一锅。',
+    ].join('\n'),
+  },
+  {
+    id: 'coder',
+    name: '程序员',
+    icon: '💻',
+    color: '#1f6feb',
+    tagline: '写各种程序，跑通了才算完',
+    kind: 'coder',
+    prompt: [
+      '你现在的角色是「程序员」：用户的工程师，负责把各种程序真正写出来、跑通、交付。',
+      '行为准则：',
+      '1. 先给能跑的代码，再解释；解释只讲关键决策和边界，不逐行复述。',
+      '2. 动手前先看现场：读现有文件、跑一次、看真实报错，不凭描述猜。报错先定位再改，不猜着重写整个文件。',
+      '3. 只做他要的那件事：不擅自扩大改动范围，不追加没要求的选项/文件/"顺带优化"，不把简单需求包装成大工程。',
+      '4. 代码简洁、可运行、能直接复制；除非他要求，不写没用的注释和防御性样板。',
+      '5. 用到的技术栈/命令如果本机可能没有，先验证（which/--version），缺什么直说，不假装跑过。',
+      '6. 交付时说清三件事：改/写了哪几个文件、怎么验证的、要不要重启或重装。',
+      '7. 他要是想弄懂某个概念而不是要成品，一句话指到「编程老师」角色。',
     ].join('\n'),
   },
   {
@@ -143,6 +164,35 @@ const COMMON = [
   '- 记忆库是文件，id 是稳定标识；引用记忆时给出 id 或标题。',
 ].join('\n')
 
+/**
+ * 文件能力（2026-10-22 起所有角色通用）。
+ *
+ * 之前的提示词只教模型"看记忆正文"，于是遇到书 / 简历 / 导出语料时只能让用户把内容贴进来。
+ * 现在条目本身就带文件：memory_read 会给出每个附件的绝对路径（复制的在 attachments/<id>/，
+ * 原地引用的是原路径）。这一块只讲"拿到路径之后怎么读"，不再重复记忆协议。
+ */
+const FILES = [
+  '文件能力（所有角色通用）：',
+  '- 记忆条目可能带附件。memory_read <id> 末尾会列 `- 文件名（大小，类型）→ 绝对路径`。**先看路径再决定读什么，不要让用户重新贴一遍内容。**',
+  '- 文本（txt / md / json / csv / 古籍原文）直接用 read；找关键词用 grep，再按 offset/limit 只读那一段。',
+  '- 二进制不要直接 read：PDF 用 `PYTHONPATH=/tmp/pdflib python3 -c "from pypdf import PdfReader;print(...)"` 抽文本；docx 用 python-docx；图片用 read_image；.blend 用 blender 插件（blender_rt_*）；.mobi/.epub 先找同名 .txt。',
+  '- 大文件（整本书、整份导出）**不要整本灌进上下文**：先看目录 / README / grep 定位，再读需要的那几段，正文里给页码或行号。',
+  '- 记忆里存结论 + 路径；原文永远回文件里读，别把长段落抄进记忆库。',
+  '- 用户没给路径、条目里也没有附件时，先说"这条只有文字没有原文件"，再问要不要入库；不要假装读过。',
+].join('\n')
+
+/** 每个角色的"原文仓库"在哪：写进提示词，省得每次都 memory_list 摸一遍。 */
+const ROLE_FILES = {
+  programmer: '- 本角色的源文件：.dsh/plugins/<name>/（插件源码）、.dsh/skills/、tools/；项目代码按用户给的路径读。',
+  coder: '- 本角色的源文件：项目仓库由用户给路径；插件源码在 .dsh/plugins/<name>/；跑之前先 read 相关文件。',
+  professor: '- 本角色的源文件：books/01-08 是哲学/兵家等古籍原文，books/09-心理与认知 是心理书；理科馆那 16 本教材只有出版方/豆瓣链接、本机尚无原文，缺件就直说，不要编。',
+  mentor: '- 本角色的源文件：books/01-08（道家/兵家/儒家/谋略/家训/处世）、books/09-心理与认知（心理书）都是 txt/PDF/epub，可 grep 引原文；画像与聊天原话在 about-you/PROFILE.md、about-you/chats/（只 grep，别全读）。',
+  modeler: '- 本角色的源文件：建成品 .blend 在 avita07/ 等工作区子目录（建模成品条目里记了路径）；建模偏好条目直接读正文即可。',
+  searcher: '- 本角色的源文件：source/gpt-export/*.json 是 ChatGPT 历史导出（21MB，只 grep / 按需抽），about-you/chats/ 是本机聊天全文（332 个，只 grep）。',
+  'plugin-smith': '- 本角色的源文件：.dsh/plugins/<name>/（宿主 host/*.js + client.js + cordis.patch.yml），规范条目 id 是 plug-dev-rules。',
+  magnifier: '- 本角色的源文件：resume/ 整个仓库（master/blocks/*.md、cover-letter-master/、applications.md、jobs/），简历/CL 原件在 /Users/zehanruan/Documents/Course/COOP/ 下（Resume.pdf、Cover Letter/Cover Letter.pdf），排版模板是 OneDrive 里的 Resume.docx。',
+}
+
 /* ── 开屏记忆：角色跨会话的「上次做到哪」 ─────────────────────── */
 
 /** 索引里存的是 UTC ISO；展示用本机时间，避免和日志标题里的本地时间打架。 */
@@ -156,6 +206,8 @@ function localTime(v) {
 /** 需要开场就带上历史记录的角色。角色 JSON 里写 atlas:{kind,category,label,limit} 可以覆盖这里的登记。 */
 const ROLE_DIGESTS = {
   'win-admin': { kind: 'library-windows', category: '操作日志', label: '操作日志', limit: 5 },
+  // 放大镜：求职馆全部条目全文注入（原稿 / CL 母版 / 使用规则 / 两个自动化框架）
+  magnifier: { kind: 'library-work-applying', label: '求职馆 · 全部材料', full: true, limit: 40 },
 }
 
 /**
@@ -168,13 +220,23 @@ export function roleDigest(r) {
   const cfg = r.atlas && typeof r.atlas === 'object' ? r.atlas : ROLE_DIGESTS[r.id]
   if (!cfg || typeof cfg.kind !== 'string') return ''
   try {
-    const n = Math.max(1, Math.min(Number(cfg.limit) || 5, 8))
+    const n = Math.max(1, Math.min(Number(cfg.limit) || 5, 40))
     const rows = listEntries()
       .filter((e) => e.kind === cfg.kind && (!cfg.category || e.category === cfg.category))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)))
       .slice(0, n)
     const where = [r.name || r.id, cfg.label || cfg.kind].filter(Boolean).join(' · ')
     if (!rows.length) return `【${where}】还没有任何记录：这次是第一次，操作完记得写第一条日志。`
+    if (cfg.full === true) {
+      return [
+        `【${where}：全部 ${rows.length} 条已全文注入（不必再调工具去翻）】`,
+        ...rows.map((e) => {
+          let body = ''
+          try { body = (readEntry(e.id) || {}).body || e.body || '' } catch { body = e.body || '' }
+          return `\n### ${e.title}（id ${e.id}）\n${body}`
+        }),
+      ].join('\n')
+    }
     return [
       `【${where}：最近 ${rows.length} 条，最新在前（已自动读入，不必再调工具去翻）】`,
       ...rows.map((e) => `- ${localTime(e.updated)}《${e.title}》${excerpt(e.body, 120)}`),
@@ -228,11 +290,12 @@ export function roleMeta() {
     .map((r) => ({ id: r.id, name: r.name, icon: r.icon, color: r.color, tagline: r.tagline, kind: r.kind || r.id }))
 }
 
-function rolePrompt(id) {
+export function rolePrompt(id) {
   const r = allRoles().find((x) => x.id === id)
-  if (!r) return ''
-  if (id === 'none') return ''
-  return [r.prompt, roleDigest(r), COMMON].filter(Boolean).join('\n\n')
+  // 没选角色 / 「无角色」都不套人格，但文件能力是工具约定、不是人格，仍然注入
+  if (!r || id === 'none') return FILES
+  const own = r.files || ROLE_FILES[r.kind] || ROLE_FILES[r.id] || ''
+  return [r.prompt, roleDigest(r), COMMON, FILES, own].filter(Boolean).join('\n\n')
 }
 
 /** 关键词自动判角色。确定性、零成本；以后可以换成本地模型。 */
@@ -322,7 +385,7 @@ function apply(ctx) {
 
   ctx.tools.register(tool({
     name: 'role_set',
-    description: '给当前会话切换角色。可选：programmer/professor/mentor/modeler/searcher/none，或用户自定义角色 id。',
+    description: '给当前会话切换角色。可选：programmer（编程老师）/coder（程序员）/professor/mentor/modeler/searcher/plugin-smith/none，或用户自定义角色 id。',
     parameters: {
       role: { type: 'string', required: true, description: '角色 id' },
     },
@@ -502,7 +565,28 @@ function apply(ctx) {
     route('/atlas/entry', async (req, res) => {
       const url = new URL(String(req.url), 'http://localhost')
       const e = readEntry(url.searchParams.get('id') || '')
-      send(res, 200, e ? { ok: true, entry: { id: e.id, title: e.title, kind: e.kind, body: e.body, tags: e.tags } } : { ok: false })
+      send(res, 200, e ? {
+        ok: true,
+        entry: { id: e.id, title: e.title, kind: e.kind, body: e.body, tags: e.tags, attachments: e.attachments || [] },
+      } : { ok: false })
+    })
+
+    // 附件原文件：/atlas/file?id=<条目 id>&name=<文件名>（?download=1 强制下载）
+    route('/atlas/file', async (req, res) => {
+      const url = new URL(String(req.url), 'http://localhost')
+      const file = resolveAttachment(url.searchParams.get('id') || '', url.searchParams.get('name') || '')
+      if (!file) {
+        res.statusCode = 404
+        res.setHeader('content-type', 'text/plain; charset=utf-8')
+        res.end('没有这个附件')
+        return
+      }
+      const name = path.basename(file)
+      const dl = url.searchParams.get('download') === '1'
+      res.statusCode = 200
+      res.setHeader('content-type', mimeOf(name))
+      res.setHeader('content-disposition', `${dl ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(name)}`)
+      fs.createReadStream(file).on('error', () => res.end()).pipe(res)
     })
   })
 }
